@@ -389,7 +389,7 @@ def htmlredirect(app): return HtmxResponseHeaders(location="http://example.org")
 [`APIRouter`](https://www.fastht.ml/docs/api/core.html#apirouter) lets
 you organize routes across multiple files in a FastHTML app.
 
-``` python
+```python
 # products.py
 ar = APIRouter()
 
@@ -774,7 +774,7 @@ def hello():
 
 Or using semantic HTML:
 
-``` python
+```python
 def SemanticText():
     return Card(
         H1("MonsterUI's Semantic Text"),
@@ -1061,7 +1061,7 @@ Starlette is the ASGI web framework used as the foundation of FastHTML. Listed h
 
 ## Get uploaded file content
 
-```
+```python
 async def handler(request):
     inp = await request.form()
     uploaded_file = inp["filename"]
@@ -1073,7 +1073,7 @@ async def handler(request):
 
 ## Return a customized response (status code and headers)
 
-```
+```python
 import json
 from starlette.responses import Response
 
@@ -1294,7 +1294,7 @@ app = Starlette(routes=routes, exception_handlers=exception_handlers)
 
 ### Put some async task as background task
 
-```
+```python
 import aiofiles
 from starlette.background import BackgroundTask
 from starlette.responses import Response
@@ -1314,7 +1314,7 @@ async def handler(request):
 
 ### Put multiple tasks as background task
 
-```
+```python
 from starlette.background import BackgroundTasks
 
 async def task1(name):
@@ -1354,7 +1354,7 @@ class MyMiddleware:
 
 ### Use `BaseHTTPMiddleware`
 
-```
+```html
 from starlette.middleware.base import BaseHTTPMiddleware
 
 class CustomHeaderMiddleware(BaseHTTPMiddleware):
