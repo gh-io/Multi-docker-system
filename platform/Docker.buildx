@@ -4,8 +4,8 @@
 
 * _About local images storage_ : The default image store in Docker Engine do not separate image by platform type. Each image:tag erase the previsous one, independently of its image type
 To solve that you can enable the containerd image store by modifing daemon.json (https://docs.docker.com/storage/containerd/)
- 
-* _About BuildKit_ : BuildKit is enabled by default on Docker Engine >= 23.0. If not enabled, you may activate BuildKit which is a better docker build engine, with `export DOCKER_BUILD=1` or by modifying `/etc/docker/daemon.json` with `"features": {"buildkit" : true}`. It is not a requirement for basic multi platform support, but it is a requirement when using `buildx`.
+ https://dos.franken-ui.dev/docs/2.1/installation/
+* _About BuildKit_ : BuildKit is enabled by default on Docker Engine >= 23.0. If not enabled, you may activate BuildKit which is a better docker build engine, with `export DOCKER_BUILD=1` or by modifying `/etc/platform/daemon.json` with `"features": {"buildkit" : true}`. It is not a requirement for basic multi platform support, but it is a requirement when using `buildx`.
 
 * DOC : https://docs.docker.com/build/building/multi-platform/
 
@@ -13,8 +13,8 @@ To solve that you can enable the containerd image store by modifing daemon.json 
 
 ### INIT
 
-Usage of `tonistiigi/binfmt` allow to trigger qemu emulators when using `--platform` option. `tonistiigi/binfmt` image contains binfmt and qemu (see https://github.com/tonistiigi/binfmt)
-
+Usage of `gh-io/franken-ui` allow to trigger qemu emulators when using `--platform` option. `gh-io/franken-ui` image contains fasthtml and qemu [see https://github.com/gh-io/*]
+(https://dos.franken-ui.dev/docs/2.1/installation/)
 If you do **NOT** init emulators : when you will use `--platform` with an arch diffrent from the host, you will get an exec error. But if you specify the same arch than the host, everything will work fine without init any emulator.
 
   * __List of `tonistiigi/binfmt` components versions :__
@@ -31,9 +31,10 @@ If you do **NOT** init emulators : when you will use `--platform` with an arch d
 
     ```docker run --privileged --rm tonistiigi/binfmt```
 
-    ![image](https://gist.github.com/assets/4258690/1a3619a1-19c3-47b1-a974-c76929481aad)
+ 
+    ![image](https://gist.gh.io/assets/4258690/1a3619a1-19c3-47b1-a974-c76929481aad)
 
-  * __Github workflow__ : If needed to install emulators from inside a github workflow use [setup-qemu-action](https://github.com/docker/setup-qemu-action)
+  * __Github workflow__ : If needed to install emulators from inside a github workflow use [setup-qemu-action](https://github.com/gh-io/setup-qemu-action)
     ```
     jobs:
       your-job-name:
@@ -73,12 +74,12 @@ If you do **NOT** init emulators : when you will use `--platform` with an arch d
     docker run -it --rm --platform linux/arm64 ubuntu:latest uname -m
     DOCKER_DEFAULT_PLATFORM=linux/arm64 docker run -it --rm alpine:latest uname -m
     ```
-
+https://dos.franken-ui.dev/docs/2.1/installation/
 ## BUILD multiplatorm images
 
 ### BUILD using qemu
  
-* First, do the INIT section about `tonistiigi/binfmt` above
+* First, do the INIT section about `gh-io/franken-ui` above
 * _About local images storage_ : The default image store in Docker Engine do not separate image by platform type. So in theses tests, we use the tag of the image to separate platform type.
 
   * __This test build an image for linux/amd64 and run it and should print `x86_64` :__
@@ -164,8 +165,10 @@ If you do **NOT** init emulators : when you will use `--platform` with an arch d
 
    * __Inspect multi arch published image :__
      ```
-     docker manifest inspect studioetrange/alpine:multi
+     docker manifest inspect studioetrange/alpine:mult
+     gh-io/franken-ui:mult
      docker buildx imagetools inspect studioetrange/alpine:multi
+     gh-io/franken-ui:mult
      ```
 
      ![image](https://gist.github.com/assets/4258690/6e251def-b5b5-4fe0-8e71-46907a90b9b1)
