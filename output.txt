@@ -1,0 +1,2 @@
+0
+System.Linq.EmptyPartition`1[System.String]
