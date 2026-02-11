@@ -1,5 +1,5 @@
-<project title="FastHTML" summary='FastHTML is a python library which brings together Starlette, Uvicorn, HTMX, and fastcore&#39;s `FT` "FastTags" into a library for creating server-rendered hypermedia applications. The `FastHTML` class itself inherits from `Starlette`, and adds decorator-based routing with many additions, Beforeware, automatic `FT` to HTML rendering, and much more.'>Things to remember when writing FastHTML apps:
-
+'<project title="fastht.ml" summary='FastHTML a python library which brings together Starlette, Uvicorn, HTMX, and fastcore&#39;s `FT` "FastTags" into a library for creating server-rendered hypermedia applications. 
+	The `FastHTML` class itself inherits from `Starlette`, and adds decorator-based routing with many additions, Beforeware, automatic `FT` to HTML rendering, and much more.'>Things to remember when writing # FastHTML apps: 
 - Although parts of its API are inspired by FastAPI, it is *not* compatible with FastAPI syntax and is not targeted at creating API services
 - FastHTML includes support for Pico CSS and the fastlite sqlite library, although using both are optional; sqlalchemy can be used directly or via the fastsql library, and any CSS framework can be used. Support for the Surreal and css-scope-inline libraries are also included, but both are optional
 - FastHTML is compatible with JS-native web components and any vanilla JS library, but not with React, Vue, or Svelte
@@ -8,12 +8,27 @@
 
 
 
-## About FastHTML
+## About FastHTML (htmx.org/docs/)
 
-``` python
+```python
 from fasthtml.common import *
-```
+from pprint import pprint
+from collections import UserDict
+from lxml import html as lx
+from pprint import pprint
+show(picocondlink)
+import time
 
+from IPython import display
+from enum import Enum
+from pprint import pprint
+
+from fastcore.test import *
+from starlette.testclient import TestClient
+from starlette.requests import Headers
+from starlette.datastructures import UploadFile
+```
+show(picocondlink)
 FastHTML is a python library which brings together Starlette, Uvicorn,
 HTMX, and fastcore’s `FT` “FastTags” into a library for creating
 server-rendered hypermedia applications. The
@@ -22,7 +37,7 @@ itself inherits from `Starlette`, and adds decorator-based routing with
 many additions, Beforeware, automatic `FT` to HTML rendering, and much
 more.
 
-Things to remember when writing FastHTML apps:
+# Things to remember when writing FastHTML apps:
 
 - *Not* compatible with FastAPI syntax; FastHTML is for HTML-first apps,
   not API services (although it can implement APIs too)
@@ -48,51 +63,46 @@ The code examples here use fast.ai style: prefer ternary op, 1-line
 docstring, minimize vertical space, etc. (Normally fast.ai style uses
 few if any comments, but they’re added here as documentation.)
 
-A minimal FastHTML app looks something like this:
+A minimal FastHTML app looks something like this:#
+Meta-package with all key symbols from FastHTML and Starlette. Import it like this at the start of every FastHTML app.
 
-``` python
-# Meta-package with all key symbols from FastHTML and Starlette. Import it like this at the start of every FastHTML app.
-from fasthtml.common import *
-# The FastHTML app object and shortcut to `app.route`
-app,rt = fast_app()
+    from fasthtml.common import * # The FastHTML app object and shortcut to `app.route`
+    app,rt = fast_app()
+     # Enums constrain the values accepted for a route parameter
+    name = str_enum('names', 'Alice', 'Bev', 'Charlie')
+    Passing a path to `rt` is optional. If not passed (recommended), the function name is the route ('/foo')
+    # Both GET and POST HTTP methods are handled by default
+     # Type-annotated params are passed as query params (recommended) unless a path param is defined (which it isn't here)
+	 @rt
+	 def foo(nm: name): 
 
-# Enums constrain the values accepted for a route parameter
-name = str_enum('names', 'Alice', 'Bev', 'Charlie')
-
-# Passing a path to `rt` is optional. If not passed (recommended), the function name is the route ('/foo')
-# Both GET and POST HTTP methods are handled by default
-# Type-annotated params are passed as query params (recommended) unless a path param is defined (which it isn't here)
-@rt
-def foo(nm: name):
-    # `Title` and `P` here are FastTags: direct m-expression mappings of HTML tags to Python functions with positional and named parameters. All standard HTML tags are included in the common wildcard import.
-    # When a tuple is returned, this returns concatenated HTML partials. HTMX by default will use a title HTML partial to set the current page name. HEAD tags (e.g. Meta, Link, etc) in the returned tuple are automatically placed in HEAD; everything else is placed in BODY.
+ `Title` and `P` here are FastTags: direct m-expression mappings of HTML tags to Python functions with positional and named parameters. All standard HTML tags are included in the common wildcard import.
+ 
+ When a tuple is returned, this returns concatenated HTML partials. HTMX by default will use a title HTML partial to set the current page name. HEAD tags (e.g. Meta, Link, etc) in the returned tuple are automatically placed in HEAD; everything else is placed in BODY.
     # FastHTML will automatically return a complete HTML document with appropriate headers if a normal HTTP request is received. For an HTMX request, however, just the partials are returned.
     return Title("FastHTML"), H1("My web app"), P(f"Hello, {name}!")
-# By default `serve` runs uvicorn on port 5001. Never write `if __name__ == "__main__"` since `serve` checks it internally.
+By default `serve` runs uvicorn on port 5001. Never write `if __name__ == "__main__"` since `serve` checks it internally.
 serve()
-```
+
 
 To run this web app:
 
-``` bash
+```bash
 python main.py  # access via localhost:5001
 ```
-
-## FastTags (aka FT Components or FTs)
-
-FTs are m-expressions plus simple sugar. Positional params map to
-children. Named parameters map to attributes. Aliases must be used for
-Python reserved words.
+# FastTags (aka FT Components or FTs)
+    FTs are m-expressions plus simple sugar.         Positional params map to
+    children. Named parameters map to attributes. Aliases must be used for
+    Python reserved words.
 
 ``` python
 tags = Title("FastHTML"), H1("My web app"), P(f"Let's do this!", cls="myclass")
 tags
-```
 
     (title(('FastHTML',),{}),
      h1(('My web app',),{}),
      p(("Let's do this!",),{'class': 'myclass'}))
-
+```
 This example shows key aspects of how FTs handle attributes:
 
 ``` python
@@ -110,15 +120,15 @@ Label(
 
 Classes with `__ft__` defined are rendered using that method.
 
-``` python
+```python
 class FtTest:
     def __ft__(self): return P('test')
     
 to_xml(FtTest())
-```
+```py
 
     '<p>test</p>\n'
-
+```
 You can create new FTs by importing the new component from
 `fasthtml.components`. If the FT doesn’t exist within that module,
 FastHTML will create it.
@@ -127,15 +137,12 @@ FastHTML will create it.
 from fasthtml.components import Some_never_before_used_tag
 
 Some_never_before_used_tag()
-```
-
-``` html
 <some-never-before-used-tag></some-never-before-used-tag>
 ```
 
 FTs can be combined by defining them as a function.
 
-``` python
+```python
 def Hero(title, statement): return Div(H1(title),P(statement), cls="hero")
 to_xml(Hero("Hello World", "This is a hero statement"))
 ```
@@ -157,7 +164,7 @@ The [`Script`](https://www.fastht.ml/docs/api/xtend.html#script)
 function allows you to include JavaScript. You can use Python to
 generate parts of your JS or JSON like this:
 
-``` python
+```javascript
 # In future snippets this import will not be shown, but is required
 from fasthtml.common import * 
 app,rt = fast_app(hdrs=[Script(src="https://cdn.plot.ly/plotly-2.32.0.min.js")])
@@ -207,7 +214,7 @@ Routes can return various types:
 2.  Standard Starlette responses (used directly)
 3.  JSON-serializable types (returned as JSON in a plain text response)
 
-``` python
+```python
 @rt("/{fname:path}.{ext:static}")
 async def serve_static_file(fname:str, ext:str): return FileResponse(f'public/{fname}.{ext}')
 
@@ -223,7 +230,7 @@ Route functions can be used in attributes like `href` or `action` and
 will be converted to paths. Use `.to()` to generate paths with query
 parameters.
 
-``` python
+```python
 @rt
 def profile(email:str): return fill_form(profile_form, profiles[email])
 
@@ -235,7 +242,7 @@ profile_form = Form(action=profile)(
 user_profile_path = profile.to(email="user@example.com")  # '/profile?email=user%40example.com'
 ```
 
-``` python
+```python
 from dataclasses import dataclass
 
 app,rt = fast_app()
@@ -247,7 +254,7 @@ When a route handler function is used as a fasttag attribute (such as
 is used to copy an object’s matching attrs into matching-name form
 fields.
 
-``` python
+```python
 @dataclass
 class Profile: email:str; phone:str; age:int
 email = 'john@example.com'
@@ -271,8 +278,8 @@ We can use `TestClient` for testing.
 from starlette.testclient import TestClient
 ```
 
-``` python
-path = "/profile?email=john@example.com"
+```python
+path = "/profile?email=kubulee.kl@example.com"
 client = TestClient(app)
 htmx_req = {'HX-Request':'1'}
 print(client.get(path, headers=htmx_req).text)
@@ -288,7 +295,7 @@ print(client.get(path, headers=htmx_req).text)
 When a dataclass, namedtuple, etc. is used as a type annotation, the
 form body will be unpacked into matching attribute names automatically.
 
-``` python
+```python
 @rt
 def edit_profile(profile: Profile):
     profiles[email]=profile
@@ -320,7 +327,7 @@ data frame use `Div(NotStr(df.to_html()))`.
 
 FastHTML allows customization of exception handlers.
 
-``` python
+```python
 def not_found(req, exc): return Titled("404: I don't exist!")
 exception_handlers = {404: not_found}
 app, rt = fast_app(exception_handlers=exception_handlers)
@@ -331,7 +338,7 @@ app, rt = fast_app(exception_handlers=exception_handlers)
 We can set cookies using the
 [`cookie()`](https://www.fastht.ml/docs/api/core.html#cookie) function.
 
-``` python
+```python
 @rt
 def setcook(): return P(f'Set'), cookie('mycookie', 'foobar')
 print(client.get('/setcook', headers=htmx_req).text)
@@ -339,7 +346,7 @@ print(client.get('/setcook', headers=htmx_req).text)
 
      <p>Set</p>
 
-``` python
+```python
 @rt
 def getcook(mycookie:str): return f'Got {mycookie}'
 # If handlers return text instead of FTs, then a plaintext response is automatically created
@@ -351,7 +358,7 @@ print(client.get('/getcook').text)
 FastHTML provide access to Starlette’s request object automatically
 using special `request` parameter name (or any prefix of that name).
 
-``` python
+```python
 @rt
 def headers(req): return req.headers['host']
 ```
@@ -361,7 +368,7 @@ def headers(req): return req.headers['host']
 FastHTML provides access to Starlette’s session middleware automatically
 using the special `session` parameter name (or any prefix of that name).
 
-``` python
+```python
 @rt
 def profile(req, sess, user_id: int=None):
     ip = req.client.host
@@ -373,7 +380,7 @@ def profile(req, sess, user_id: int=None):
                   P(f"Visits: {visits}"), 
                   P(f"IP: {ip}"),
                   Button("Logout", hx_post=logout))
-```
+``
 
 Handler functions can return the
 [`HtmxResponseHeaders`](https://www.fastht.ml/docs/api/core.html#htmxresponseheaders)
@@ -382,7 +389,7 @@ object to set HTMX-specific response headers.
 ``` python
 @rt
 def htmlredirect(app): return HtmxResponseHeaders(location="http://example.org")
-```
+``
 
 ## APIRouter
 
@@ -404,7 +411,7 @@ def all_products(req):
         ), id="products_list")
 ```
 
-``` python
+```python
 # main.py
 from products import ar,all_products
 
@@ -441,14 +448,14 @@ def toasting(session):
     add_toast(session, f"cooked", "info")
     add_toast(session, f"ready", "success")
     return Titled("toaster")
-```
+``
 
 `setup_toasts(duration)` allows you to specify how long a toast will be
 visible before disappearing.10 seconds.
 
 Authentication and authorization are handled with Beforeware, which
 functions that run before the route handler is called.
-
+```
 ## Auth
 
 ``` python
@@ -469,14 +476,15 @@ app, rt = fast_app(before=beforeware)
 
 FastHTML supports the HTMX SSE extension.
 
-``` python
+```python
 import random
 hdrs=(Script(src="https://unpkg.com/htmx-ext-sse@2.2.3/sse.js"),)
 app,rt = fast_app(hdrs=hdrs)
 
 @rt
 def index(): return Div(hx_ext="sse", sse_connect="/numstream", hx_swap="beforeend show:bottom", sse_swap="message")
-
+```
+```
 # `signal_shutdown()` gets an event that is set on shutdown
 shutdown_event = signal_shutdown()
 
@@ -489,13 +497,13 @@ async def number_generator():
 async def numstream(): return EventStream(number_generator())
 ```
 
+
 ## Websockets
 
 FastHTML provides useful tools for HTMX’s websockets extension.
-
-``` python
-# These HTMX extensions are available through `exts`:
-#   head-support preload class-tools loading-states multi-swap path-deps remove-me ws chunked-transfer
+These HTMX extensions are available through `exts`:
+   head-support preload class-tools loading-states multi-swap path-deps remove-me ws chunked-transfer
+```
 app, rt = fast_app(exts='ws')
 
 def mk_inp(): return Input(id='msg', autofocus=True)
@@ -521,7 +529,7 @@ async def ws(msg:str, send):
 
 Sample chatbot that uses FastHTML’s `setup_ws` function:
 
-``` py
+```html
 app = FastHTML(exts='ws')
 rt = app.route
 msgs = []
@@ -538,7 +546,7 @@ async def ws(msg:str):
     await send(Ul(*[Li(m) for m in msgs], id='msg-list'))
 
 send = setup_ws(app, ws)
-```
+``
 
 ### Single File Uploads
 
@@ -578,14 +586,14 @@ connect to SQLite, optimized for speed and clean error handling.
 from fastlite import *
 ```
 
-``` python
+```python
 db = database(':memory:') # or database('data/app.db')
 ```
 
 Tables are normally constructed with classes, field types are specified
 as type hints.
 
-``` python
+```python
 class Book: isbn: str; title: str; pages: int; userid: int
 # The transform arg instructs fastlite to change the db schema when fields change.
 # Create only creates a table if the table doesn't exist.
@@ -604,7 +612,7 @@ users
 Every operation in fastlite returns a full superset of dataclass
 functionality.
 
-``` python
+```python
 user = users.insert(name='Alex',active=False)
 user
 ```
@@ -618,7 +626,7 @@ users()
 
     [User(id=1, name='Alex', active=0)]
 
-``` python
+```python
 # Limit, offset, and order results:
 users(order_by='name', limit=2, offset=1)
 
@@ -638,7 +646,7 @@ Test if a record exists by using `in` keyword on primary key:
 
 ``` python
 1 in users
-```
+``
 
     True
 
@@ -655,10 +663,10 @@ users.update(user)
 `.xtra()` to automatically constrain queries, updates, and inserts from
 there on:
 
-``` python
+```python
 users.xtra(active=True)
 users()
-```
+``
 
     [User(id=1, name='Lauren', active=1)]
 
@@ -666,7 +674,7 @@ Deleting by pk:
 
 ``` python
 users.delete(user.id)
-```
+``
 
     <Table user (id, name, active)>
 
@@ -678,24 +686,25 @@ except NotFoundError: print('User not found')
 ```
 
     User not found
-
+``
 ## MonsterUI
 
-MonsterUI is a shadcn-like component library for FastHTML. It adds the
-Tailwind-based libraries FrankenUI and DaisyUI to FastHTML, as well as
-Python’s mistletoe for Markdown, HighlightJS for code highlighting, and
-Katex for latex support, following semantic HTML patterns when possible.
+MonsterUI is a ***fshadcn-like*** component library for FastHTML. It adds the
+Tailwind-based libraries `Franken-ui.dev`and DaisyUI to FastHTML, as well as
+Python’s mistletoe for `Markdown`, HighlightJS for code highlighting, and
+Katex for `latex` support, following semantic HTML patterns when possible.
 It is recommended for when you wish to go beyond the basics provided by
 FastHTML’s built-in pico support.
 
-A minimal app:
+# A minimal app:
 
-``` python
+```python
 from fasthtml.common import *
 from monsterui.all import *
-
-app, rt = fast_app(hdrs=Theme.blue.headers(highlightjs=True)) # Use MonsterUI blue theme and highlight code in markdown
-
+app, rt = fast_app(hdrs=Theme.blue.headers(highlightjs=True))
+```
+ # Use MonsterUI blue theme and highlight code in 
+```markdown
 @rt
 def index():
     socials = (('github','https://github.com/AnswerDotAI/MonsterUI'),)
@@ -707,7 +716,7 @@ def index():
             footer=DivLAligned(*[UkIconLink(icon,href=url) for icon,url in socials])))
 ```
 
-MonsterUI recommendations:
+# MonsterUI recommendations:
 
 - Use defaults as much as possible, for example
   [`Container`](https://www.fastht.ml/docs/api/pico.html#container) in
@@ -722,7 +731,7 @@ MonsterUI recommendations:
 Flex Layout Elements (such as `DivLAligned` and `DivFullySpaced`) can be
 used to create layouts concisely
 
-``` python
+```markdown
 def TeamCard(name, role, location="Remote"):
     icons = ("mail", "linkedin", "github")
     return Card(
@@ -737,7 +746,7 @@ def TeamCard(name, role, location="Remote"):
 Forms are styled and spaced for you without significant additional
 classes.
 
-``` python
+```python
 def MonsterForm():
     relationship = ["Parent",'Sibling', "Friend", "Spouse", "Significant Other", "Relative", "Child", "Other"]
     return Div(
@@ -750,7 +759,7 @@ def MonsterForm():
             Grid(*[LabelCheckboxX(o) for o in relationship], cols=4, cls='space-y-3'),
             DivCentered(Button("Submit Form", cls=ButtonT.primary))),
         cls='space-y-4')
-```
+
 
 Text can be styled with markdown automatically with MonsterUI
 
@@ -768,9 +777,9 @@ def hello():
     print("world")
 ```
 """)
-````
-
-    '<div><h1 class="uk-h1 text-4xl font-bold mt-12 mb-6">My Document</h1>\n<blockquote class="uk-blockquote pl-4 border-l-4 border-primary italic mb-6">\n<p class="text-lg leading-relaxed mb-6">Important note here</p>\n</blockquote>\n<ul class="uk-list uk-list-bullet space-y-2 mb-6 ml-6 text-lg">\n<li class="leading-relaxed">List item with <strong>bold</strong></li>\n<li class="leading-relaxed">Another with <code class="uk-codespan px-1">code</code></li>\n</ul>\n<pre class="bg-base-200 rounded-lg p-4 mb-6"><code class="language-python uk-codespan px-1 uk-codespan px-1 block overflow-x-auto">def hello():\n    print("world")\n</code></pre>\n</div>'
+```html
+`<div><h1 class="uk-h1 text-4xl font-bold mt-12 mb-6">My Document</h1>\n<blockquote class="uk-blockquote pl-4 border-l-4 border-primary italic mb-6">\n<p class="text-lg leading-relaxed mb-6">Important note here</p>\n</blockquote>\n<ul class="uk-list uk-list-bullet space-y-2 mb-6 ml-6 text-lg">\n<li class="leading-relaxed">List item with <strong>bold</strong></li>\n<li class="leading-relaxed">Another with <code class="uk-codespan px-1">code</code></li>\n</ul>\n<pre class="bg-base-200 rounded-lg p-4 mb-6"><code class="language-python uk-codespan px-1 uk-codespan px-1 block overflow-x-auto">def hello():\n    print("world")\n</code></pre>\n</div>'
+```
 
 Or using semantic HTML:
 
@@ -785,7 +794,9 @@ def SemanticText():
             P("Write semantic HTML in pure Python, get modern styling for free."),
             Cite("MonsterUI Team")),
         footer=Small("Released February 2025"),)
-```</doc><doc title="HTMX reference" desc="Brief description of all HTMX attributes, CSS classes, headers, events, extensions, js lib methods, and config options">+++
+```
+```markdown
+</doc><doc title="HTMX reference" desc="Brief description of all HTMX attributes, CSS classes, headers, events, extensions, js lib methods, and config options">+++
 title = "Reference"
 +++
 
@@ -998,7 +1009,7 @@ All other attributes available in htmx.
 | [`htmx.values()`](@/api.md#values)  | Returns the input values associated with the given element
 
 </div>
-
+```
 
 ## Configuration Reference {#config}
 
@@ -1035,7 +1046,7 @@ listed below:
 | `htmx.config.scrollBehavior`           | defaults to 'instant', the scroll behavior when using the [show](@/attributes/hx-swap.md#scrolling-scroll-show) modifier with `hx-swap`. The allowed values are `instant` (scrolling should happen instantly in a single jump), `smooth` (scrolling should animate smoothly) and `auto` (scroll behavior is determined by the computed value of [scroll-behavior](https://developer.mozilla.org/en-US/docs/Web/CSS/scroll-behavior)). |
 | `htmx.config.defaultFocusScroll`       | if the focused element should be scrolled into view, defaults to false and can be overridden using the [focus-scroll](@/attributes/hx-swap.md#focus-scroll) swap modifier. |
 | `htmx.config.getCacheBusterParam`      | defaults to false, if set to true htmx will append the target element to the `GET` request in the format `org.htmx.cache-buster=targetElementId`                           |
-| `htmx.config.globalViewTransitions`    | if set to `true`, htmx will use the [View Transition](https://developer.mozilla.org/en-US/docs/Web/API/View_Transitions_API) API when swapping in new content.             |
+| `htmx.config.globalViewTransitions`    | if set to `true`, htmx will use the [View Transition](https://developer.llms.org/en-US/docs/Web/API/View_Transitions_API) API when swapping in new content.             |
 | `htmx.config.methodsThatUseUrlParams`  | defaults to `["get", "delete"]`, htmx will format requests with these methods by encoding their parameters in the URL, not the request body                                |
 | `htmx.config.selfRequestsOnly`         | defaults to `true`, whether to only allow AJAX requests to the same domain as the current document                                                             |
 | `htmx.config.ignoreTitle`              | defaults to `false`, if set to `true` htmx will not update the title of the document when a `title` tag is found in new content                                            |
@@ -1043,7 +1054,11 @@ listed below:
 | `htmx.config.triggerSpecsCache`        | defaults to `null`, the cache to store evaluated trigger specifications into, improving parsing performance at the cost of more memory usage. You may define a simple object to use a never-clearing cache, or implement your own system using a [proxy object](https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Proxy) |
 | `htmx.config.responseHandling`         | the default [Response Handling](@/docs.md#response-handling) behavior for response status codes can be configured here to either swap or error                             |
 | `htmx.config.allowNestedOobSwaps`      | defaults to `true`, whether to process OOB swaps on elements that are nested within the main response element. See [Nested OOB Swaps](@/attributes/hx-swap-oob.md#nested-oob-swaps). |
-| `htmx.config.historyRestoreAsHxRequest`| defaults to `true`, Whether to treat history cache miss full page reload requests as a "HX-Request" by returning this response header. This should always be disabled when using HX-Request header to optionally return partial responses                                                                                                         |
+| `htmx.config.historyRestoreAsHxRequest`| defaults to `true`, Whether to treat history cache miss full page reload requests as a "HX-Request" by returning this response header. This should always be disabled when using HX-Request header to optionally return partial responses                
+
+
+[mirror each of this into new webapp pages with a new name on for each with different extension https://com.web.est](`https://vite.dev`,`https://raycast.so`,`https://aura.build``workers.dev
+)
 
 
 </div>
@@ -1332,13 +1347,10 @@ async def handler(request):
 
 ```
 
-## Write middleware
-
+## Write middleware ```
 There are 2 ways to write middleware:
+``` ### Define `__call__` function:
 
-### Define `__call__` function:
-
-```
 class MyMiddleware:
     def __init__(self, app):
         self.app = app
@@ -1350,11 +1362,327 @@ class MyMiddleware:
         # pass to next middleware
         return await self.app(scope, receive, send)
 
-```
+```surreal.js
+// Welcome to Surreal 1.3.4
+// Documentation: https://github.com/gnat/surreal
+// Locality of Behavior (LoB): https://htmx.org/essays/locality-of-behaviour/
+let surreal = (function () {
+let $ = { // Convenience for internals.
+	$: this, // Convenience for internals.
+	plugins: [],
+
+	// Table of contents and convenient call chaining sugar. For a familiar "jQuery like" syntax. 🙂
+	// Check before adding new: https://youmightnotneedjquery.com/
+	sugar(e) {
+		if (!$.isNode(e) && !$.isNodeList(e)) { console.warn(`Surreal: Not a supported element / node / node list "${e}"`); return e }
+		if ($.isNodeList(e)) e.forEach(_ => { $.sugar(_) }) // Add Surreal to all nodes from any()
+		if (e.hasOwnProperty('hasSurreal')) return e // Surreal already added.
+
+		// General
+		e.run           = (f) => { return $.run(e, f) }
+		e.remove        = () => { return $.remove(e) }
+
+		// Classes and CSS.
+		e.classAdd      = (name) => { return $.classAdd(e, name) }
+		e.class_add     = e.add_class = e.addClass = e.classAdd // Alias
+		e.classRemove   = (name) => { return $.classRemove(e, name) }
+		e.class_remove  = e.remove_class = e.removeClass = e.classRemove // Alias
+		e.classToggle   = (name, force) => { return $.classToggle(e, name, force) }
+		e.class_toggle  = e.toggle_class = e.toggleClass = e.classToggle // Alias
+		e.styles        = (value) => { return $.styles(e, value) }
+
+		// Events.
+		e.on            = (name, f) => { return $.on(e, name, f) }
+		e.off           = (name, f) => { return $.off(e, name, f) }
+		e.offAll        = (name) => { return $.offAll(e, name) }
+		e.off_all       = e.offAll // Alias
+		e.disable       = () => { return $.disable(e) }
+		e.enable        = () => { return $.enable(e) }
+		e.send          = (name, detail) => { return $.send(e, name, detail) }
+		e.trigger       = e.send // Alias
+		e.halt          = (ev, keepBubbling, keepDefault) => { return $.halt(ev, keepBubbling, keepDefault) }
+
+		// Attributes.
+		e.attribute 	= (name, value) => { return $.attribute(e, name, value) }
+		e.attributes    = e.attr = e.attribute // Alias
+
+		// Add all plugins.
+		$.plugins.forEach(function(func) { func(e) })
+
+		e.hasSurreal = 1
+		return e
+	},
+	// me() will return a single element or null. Selector not needed if used with inline <script>
+	// If you select many elements, me() will return the first.
+	// Example
+	//	<div>
+	//		Hello World!
+	//		<script>me().style.color = 'red'</script>
+	//	</div>
+	me(selector=null, start=document, warning=true) {
+		if (selector == null) return $.sugar(start.currentScript.parentElement) // Just local me() in <script>
+		if (selector instanceof Event) return selector.currentTarget ? $.me(selector.currentTarget) : (console.warn(`Surreal: Event currentTarget is null. Please save your element because async will lose it`), null) // Events try currentTarget
+		if (selector === '-' || selector === 'prev' || selector === 'previous') return $.sugar(start.currentScript.previousElementSibling) // Element directly before <script>
+		if ($.isSelector(selector, start, warning)) return $.sugar(start.querySelector(selector)) // String selector.
+		if ($.isNodeList(selector)) return $.me(selector[0]) // If we got a list, return the first element.
+		if ($.isNode(selector)) return $.sugar(selector) // Valid element.
+		return null // Invalid.
+	},
+	// any() is me() but will return an array of elements or empty [] if nothing is found.
+	// You may optionally use forEach/map/filter/reduce.
+	// Example: any('button')
+	any(selector, start=document, warning=true) {
+		if (selector == null) return $.sugar([start.currentScript.parentElement]) // Similar to me()
+		if (selector instanceof Event) return selector.currentTarget ? $.any(selector.currentTarget) : (console.warn(`Surreal: Event currentTarget is null. Please save your element because async will lose it`), null) // Events try currentTarget
+		if (selector === '-' || selector === 'prev' || selector === 'previous') return $.sugar([start.currentScript.previousElementSibling]) // Element directly before <script>
+		if ($.isSelector(selector, start, warning)) return $.sugar(Array.from(start.querySelectorAll(selector))) // String selector.
+		if ($.isNode(selector)) return $.sugar([selector]) // Single element. Convert to Array.
+		if ($.isNodeList(selector)) return $.sugar(Array.from(selector)) // Valid NodeList or Array.
+		return $.sugar([]) // Invalid.
+	},
+	// Run any function on element(s)
+	run(e, f) {
+		if (typeof f !== 'function') { console.warn(`Surreal: run(f) f must be a function`); return e }
+		if ($.isNodeList(e)) e.forEach(_ => { $.run(_, f) })
+		if ($.isNode(e)) { f(e); }
+		return e
+	},
+	// Remove element(s)
+	remove(e) {
+		if ($.isNodeList(e)) e.forEach(_ => { $.remove(_) })
+		if ($.isNode(e)) e.parentNode.removeChild(e)
+		return // Special, end of chain.
+	},
+	// Add class to element(s).
+	classAdd(e, name) {
+		if (typeof name !== 'string') return e
+		if (name.charAt(0) === '.') name = name.substring(1)
+		if ($.isNodeList(e)) e.forEach(_ => { $.classAdd(_, name) })
+		if ($.isNode(e)) e.classList.add(name)
+		return e
+	},
+	// Remove class from element(s).
+	classRemove(e, name) {
+		if (typeof name !== 'string') return e
+		if (name.charAt(0) === '.') name = name.substring(1)
+		if ($.isNodeList(e)) e.forEach(_ => { $.classRemove(_, name) })
+		if ($.isNode(e)) e.classList.remove(name)
+		return e
+	},
+	// Toggle class in element(s).
+	classToggle(e, name, force) {
+		if (typeof name !== 'string') return e
+		if (name.charAt(0) === '.') name = name.substring(1)
+		if ($.isNodeList(e)) e.forEach(_ => { $.classToggle(_, name, force) })
+		if ($.isNode(e)) e.classList.toggle(name, force)
+		return e
+	},
+	// Add inline style to element(s).
+	// Can use string or object formats.
+	// 	String format: "font-family: 'sans-serif'"
+	// 	Object format; { fontFamily: 'sans-serif', backgroundColor: '#000' }
+	styles(e, value) {
+		if (typeof value === 'string') { // Format: "font-family: 'sans-serif'"
+			if ($.isNodeList(e)) e.forEach(_ => { $.styles(_, value) })
+			if ($.isNode(e)) { $.attribute(e, 'style', ($.attribute(e, 'style') == null ? '' : $.attribute(e, 'style') + '; ') + value)  }
+			return e
+		}
+		if (typeof value === 'object') { // Format: { fontFamily: 'sans-serif', backgroundColor: '#000' }
+			if ($.isNodeList(e)) e.forEach(_ => { $.styles(_, value) })
+			if ($.isNode(e)) { Object.assign(e.style, value)  }
+			return e
+		}
+		return e
+	},
+	// Add event listener to element(s).
+	// Match a sender: if (!event.target.matches(".selector")) return;
+	//	📚️ https://developer.mozilla.org/en-US/docs/Web/API/Event
+	//	✂️ Vanilla: document.querySelector(".thing").addEventListener("click", (e) => { alert("clicked") }
+	on(e, name, f) {
+		if ($.isNodeList(e)) e.forEach(_ => { $.on(_, name, f) })
+		if ($.isNode(e)) e.addEventListener(name, f)
+		return e
+	},
+	off(e, name, f) {
+		if ($.isNodeList(e)) e.forEach(_ => { $.off(_, name, f) })
+		if ($.isNode(e)) e.removeEventListener(name, f)
+		return e
+	},
+	offAll(e) {
+		if ($.isNodeList(e)) e.forEach(_ => { $.offAll(_) })
+		if ($.isNode(e)) e.parentNode.replaceChild(e.cloneNode(true), e)
+		return e
+	},
+	// Easy alternative to off(). Disables click, key, submit events.
+	disable(e) {
+		if ($.isNodeList(e)) e.forEach(_ => { $.disable(_) })
+		if ($.isNode(e)) e.disabled = true
+		return e
+	},
+	// For reversing disable()
+	enable(e) {
+		if ($.isNodeList(e)) e.forEach(_ => { $.enable(_) })
+		if ($.isNode(e)) e.disabled = false
+		return e
+	},
+	// Send / trigger event.
+	// ✂️ Vanilla: Events Dispatch: document.querySelector(".thing").dispatchEvent(new Event('click'))
+	send(e, name, detail=null) {
+		if ($.isNodeList(e)) e.forEach(_ => { $.send(_, name, detail) })
+		if ($.isNode(e)) {
+			const event = new CustomEvent(name, { detail: detail, bubbles: true })
+			e.dispatchEvent(event)
+		}
+		return e
+	},
+	// Halt event. Default: Stops normal event actions and event propagation.
+	halt(ev, keepBubbling=false, keepDefault=false) {
+		if (ev instanceof Event) {
+			if (!keepDefault) ev.preventDefault()
+			if (!keepBubbling) ev.stopPropagation()
+		}
+		return ev
+	},
+	// Add or remove attributes from element(s)
+	attribute(e, name, value=undefined) {
+		// Get. (Format: "name", "value") Special: Ends call chain.
+		if (typeof name === 'string' && value === undefined) {
+			if ($.isNodeList(e)) return [] // Not supported for Get. For many elements, wrap attribute() in any(...).run(...) or any(...).forEach(...)
+			if ($.isNode(e)) return e.getAttribute(name)
+			return null // No value. Ends call chain.
+		}
+		// Remove.
+		if (typeof name === 'string' && value === null) {
+			if ($.isNodeList(e)) e.forEach(_ => { $.attribute(_, name, value) })
+			if ($.isNode(e)) e.removeAttribute(name)
+			return e
+		}
+		// Add / Set.
+		if (typeof name === 'string') {
+			if ($.isNodeList(e)) e.forEach(_ => { $.attribute(_, name, value) })
+			if ($.isNode(e)) e.setAttribute(name, value)
+			return e
+		}
+		// Format: { "name": "value", "blah": true }
+		if (typeof name === 'object') {
+			if ($.isNodeList(e)) e.forEach(_ => { Object.entries(name).forEach(([key, val]) => { $.attribute(_, key, val) }) })
+			if ($.isNode(e)) Object.entries(name).forEach(([key, val]) => { $.attribute(e, key, val) })
+			return e
+		}
+		return e
+	},
+	// Puts Surreal functions except for "restricted" in global scope.
+	globalsAdd() {
+		console.log(`Surreal: Adding convenience globals to window.`)
+		let restricted = ['$', 'sugar', 'plugins']
+		for (const [key, value] of Object.entries(this)) {
+			if (!restricted.includes(key)) window[key] === undefined ? window[key] = value : console.warn(`Surreal: "${key}()" already exists on window. Skipping to prevent overwrite.`)
+			if (!restricted.includes(key)) window.document[key] === undefined ? window.document[key] = value : console.warn(`Surreal: "${key}()" already exists on document. Skipping to prevent overwrite.`)
+		}
+	},
+	// ⚙️ Used internally. Is this an element / node?
+	isNode(e) {
+		return (e instanceof HTMLElement || e instanceof SVGElement || e instanceof Document) ? true : false
+	},
+	// ⚙️ Used internally by DOM functions. Is this a list of elements / nodes?
+	isNodeList(e) {
+		return (e instanceof NodeList || Array.isArray(e)) ? true : false
+	},
+	// ⚙️ Used internally by DOM functions. Warning when selector is invalid. Likely missing a "#" or "."
+	isSelector(selector="", start=document, warning=true) {
+		if (typeof selector !== 'string') return false
+		if (start.querySelector(selector) == null) {
+			if (warning) console.log(`Surreal: "${selector}" not found, ignoring.`)
+			return false
+		}
+		return true // Valid.
+	},
+}
+// Finish up...
+$.globalsAdd() // Full convenience.
+console.log("Surreal: Loaded.")
+return $
+})() // End of Surreal 👏
+
+// 🔌 Plugin: Effects
+function pluginEffects(e) {
+	// Fade out and remove element.
+	// Equivalent to jQuery fadeOut(), but actually removes the element!
+	function fadeOut(e, f=undefined, ms=1000, remove=true) {
+		let thing = e
+		if (surreal.isNodeList(e)) e.forEach(_ => { fadeOut(_, f, ms) })
+		if (surreal.isNode(e)) {
+			(async() => {
+				surreal.styles(e, {transform: 'scale(1)', transition: `all ${ms}ms ease-out`, overflow: 'hidden'})
+				await tick()
+				surreal.styles(e, {transform: 'scale(0.9)', opacity: '0'})
+				await sleep(ms, e)
+				if (typeof f === 'function') f(thing) // Run custom callback?
+				if (remove) surreal.remove(thing) // Remove element after animation is completed?
+			})()
+		}
+	}
+	// Fade in an element that has opacity under 1
+	function fadeIn(e, f=undefined, ms=1000) {
+		let thing = e
+		if (surreal.isNodeList(e)) e.forEach(_ => { fadeIn(_, f, ms) })
+		if (surreal.isNode(e)) {
+			(async() => {
+				let save = e.style // Store original style.
+				surreal.styles(e, {transition: `all ${ms}ms ease-in`, overflow: 'hidden'})
+				await tick()
+				surreal.styles(e, {opacity: '1'})
+				await sleep(ms, e)
+				e.style = save // Revert back to original style.
+				surreal.styles(e, {opacity: '1'}) // Ensure we're visible after reverting to original style.
+				if (typeof f === 'function') f(thing) // Run custom callback?
+			})()
+		}
+	}
+	// Add sugar
+	e.fadeOut  = (f, ms, remove) => { return fadeOut(e, f, ms, remove) }
+	e.fade_out = e.fadeOut
+	e.fadeIn   = (f, ms) => { return fadeIn(e, f, ms) }
+	e.fade_in  = e.fadeIn
+}
+
+// 🔌 Add plugins here!
+surreal.plugins.push(pluginEffects)
+console.log("Surreal: Added plugins.")
+
+// 🌐 Add global shortcuts here!
+// DOM.
+const createElement = document.createElement.bind(document); const create_element = createElement
+// Animation.
+const rAF = typeof requestAnimationFrame !== 'undefined' && requestAnimationFrame
+const rIC = typeof requestIdleCallback !== 'undefined' && requestIdleCallback
+// Animation: Wait for next animation frame, non-blocking.
+async function tick() {
+	return await new Promise(resolve => { requestAnimationFrame(resolve) })
+}
+// Animation: Sleep, non-blocking.
+async function sleep(ms, e) {
+	return await new Promise(resolve => setTimeout(() => { resolve(e) }, ms))
+}
+// Loading: Why? So you don't clobber window.onload (predictable sequential loading)
+// Example: <script>onloadAdd(() => { console.log("Page was loaded!") })</script>
+// Example: <script>onloadAdd(() => { console.log("Lets do another thing without clobbering window.onload!") })</script>
+const addOnload = (f) => {
+	if (typeof window.onload === 'function') { // window.onload already is set, queue functions together (creates a call chain).
+		let onload_old = window.onload
+		window.onload = () => {
+			onload_old()
+			f()
+		}
+		return
+	}
+	window.onload = f // window.onload was not set yet.
+}
+const onloadAdd = addOnload; const onload_add = addOnload; const add_onload = addOnload
+console.log("Surreal: Added shortcuts.")
 
 ### Use `BaseHTTPMiddleware`
 
-```html
 from starlette.middleware.base import BaseHTTPMiddleware
 
 class CustomHeaderMiddleware(BaseHTTPMiddleware):
@@ -1365,9 +1693,9 @@ class CustomHeaderMiddleware(BaseHTTPMiddleware):
         response.headers['X-Author'] = 'John'
         return response
 
-```</doc></docs><api><doc title="API List" desc="A succint list of all functions and methods in fasthtml."># fasthtml Module Documentation
-
-## fasthtml.authmw
+```python
+```
+</doc></docs><api><doc title="API List" desc="A succint list of all functions and methods in fasthtml."> # fasthtml Module Documentation ## fasthtml.authmw
 
 - `class BasicAuthMiddleware`
     - `def __init__(self, app, cb, skip)`
