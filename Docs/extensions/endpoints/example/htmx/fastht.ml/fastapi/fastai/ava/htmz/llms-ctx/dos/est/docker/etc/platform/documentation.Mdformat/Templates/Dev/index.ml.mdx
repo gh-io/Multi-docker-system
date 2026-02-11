@@ -1,5 +1,5 @@
 <project title="fastht.ml" summary='FastHTML a python library which brings together Starlette, Uvicorn, HTMX, and fastcore&#39;s `FT` "FastTags" into a library for creating server-rendered hypermedia applications. 
-	The FastHTML class itself inherits from `Starlette`, and adds decorator-based routing with many additions, Beforeware, automatic `FT` to HTML rendering, and much more.'>Things to remember when writing.
+	The FastHTML class itself inherits from `Starlette`, and adds decorator-based routing with many additions, Beforeware, automatic `FT` to HTML rendering, and much more.'>Things to remember when writing. 
 	# FastHTML apps: 
 - Although parts of its API are inspired by FastAPI, it is *not* compatible with FastAPI syntax and is not targeted at creating API services
 - FastHTML includes support for Pico CSS and the fastlite sqlite library, although using both are optional; sqlalchemy can be used directly or via the fastsql library, and any CSS framework can be used. Support for the Surreal and css-scope-inline libraries are also included, but both are optional
@@ -7,7 +7,7 @@
 - Use `serve()` for running uvicorn (`if __name__ == "__main__"` is not needed since it's automatic)
 - When a title is needed with a response, use `Titled`; note that that already wraps children in `Container`, and already includes both the meta title as well as the H1 element.<docs><doc title="FastHTML concise guide" desc="A brief overview of idiomatic FastHTML apps"># Concise reference
 
-```js
+``` py
 import * as tvmjs from "@mlc-ai/web-runtime";
 import log from "loglevel";
 import { ChatOptions, MLCEngineConfig } from "./config";
@@ -272,7 +272,6 @@ third-party libraries. It serializes
 [datetime](https://github.com/ijl/orjson?tab=readme-ov-file#datetime),
 [numpy](https://github.com/ijl/orjson?tab=readme-ov-file#numpy), and
 [UUID](https://github.com/ijl/orjson?tab=readme-ov-file#uuid) instances natively.
-
 [orjson.dumps()](https://github.com/ijl/orjson?tab=readme-ov-file#serialize) is
 something like 10x as fast as `json`, serializes
 common types and subtypes, has a `default` parameter for the caller to specify
@@ -311,6 +310,7 @@ alternative repository is [codeberg.org/ijl/orjson](https://codeberg.org/ijl/orj
 There is no open issue tracker or pull requests due to signal-to-noise ratio.
 There is a [CHANGELOG](https://github.com/ijl/orjson/blob/master/CHANGELOG.md)
 available in the repository.
+__init__
 
 1. [Usage](https://github.com/ijl/orjson?tab=readme-ov-file#usage)
     1. [Install](https://github.com/ijl/orjson?tab=readme-ov-file#install)
@@ -1097,7 +1097,7 @@ can result in different rounding.
 `numpy.datetime64` instances are serialized as RFC 3339 strings and
 datetime options affect them.
 
-```python
+``` python
 >>> import orjson, numpy
 >>> orjson.dumps(
         numpy.datetime64("2021-01-01T00:00:00.172"),
@@ -1167,7 +1167,7 @@ If `orjson.dumps()` is given a `str` that does not contain valid UTF-8,
 `orjson.JSONEncodeError` is raised. If `loads()` receives invalid UTF-8,
 `orjson.JSONDecodeError` is raised.
 
-```python
+``` python
 >>> import orjson, json
 >>> orjson.dumps('\ud800')
 JSONEncodeError: str is not valid UTF-8: surrogates not allowed
@@ -1337,7 +1337,7 @@ To package orjson requires at least [Rust](https://www.rust-lang.org/) 1.89,
 a C compiler, and the [maturin](https://github.com/PyO3/maturin) build tool.
 The recommended build command is:
 
-```sh
+``` bash
 maturin build --release --strip
 ```
 
@@ -1458,10 +1458,10 @@ from starlette.testclient import TestClient
 from starlette.requests import Headers
 from starlette.datastructures import UploadFile
 ```
-show(picocondlink)
-FastHTML is a python library which brings together Starlette, Uvicorn,
-HTMX, and fastcore’s `FT` “FastTags” into a library for creating
-server-rendered hypermedia applications. The
+show(`picocondlink`)
+FastHTML is a python library which brings together `Starlette`, `Uvicorn`,
+`HTMX`, and `fastcore’s` `FT` “FastTags” into a library for creating
+server-rendered `hypermedia` applications. The
 [`FastHTML`](https://www.fastht.ml/docs/api/core.html#fasthtml) class
 itself inherits from `Starlette`, and adds decorator-based routing with
 many additions, Beforeware, automatic `FT` to HTML rendering, and much
@@ -1471,8 +1471,8 @@ more.
 
 - *Not* compatible with FastAPI syntax; FastHTML is for HTML-first apps,
   not API services (although it can implement APIs too)
-- FastHTML includes support for Pico CSS and the fastlite sqlite
-  library, although using both are optional; sqlalchemy can be used
+- FastHTML includes support for `PicoCSS` and the fastlite sqlite
+  library, although using both are optional; `sqlalchemy` can be used
   directly or via the fastsql library, and any CSS framework can be
   used. MonsterUI is a richer FastHTML-first component framework with
   similar capabilities to shadcn
@@ -1496,7 +1496,7 @@ few if any comments, but they’re added here as documentation.)
 A minimal FastHTML app looks something like this:#
 Meta-package with all key symbols from FastHTML and Starlette. Import it like this at the start of every FastHTML app.
 
-    from fasthtml.common import * # The FastHTML app object and shortcut to `app.route`
+ from fasthtml.common import * # The FastHTML app object and shortcut to `app.route`
     app,rt = fast_app()
      # Enums constrain the values accepted for a route parameter
     name = str_enum('names', 'Alice', 'Bev', 'Charlie')
@@ -1508,7 +1508,7 @@ Meta-package with all key symbols from FastHTML and Starlette. Import it like th
 
  `Title` and `P` here are FastTags: direct m-expression mappings of HTML tags to Python functions with positional and named parameters. All standard HTML tags are included in the common wildcard import.
  
- When a tuple is returned, this returns concatenated HTML partials. HTMX by default will use a title HTML partial to set the current page name. HEAD tags (e.g. Meta, Link, etc) in the returned tuple are automatically placed in HEAD; everything else is placed in BODY.
+ When a tuple is returned, this returns concatenated HTML partials. `HTMX by default will use a title HTML partial to set the current page name. HEAD tags (e.g. Meta, Link, etc) in the returned tuple are automatically placed in HEAD; everything else is placed in BODY.
     # FastHTML will automatically return a complete HTML document with appropriate headers if a normal HTTP request is received. For an HTMX request, however, just the partials are returned.
     return Title("FastHTML"), H1("My web app"), P(f"Hello, {name}!")
 By default `serve` runs uvicorn on port 5001. Never write `if __name__ == "__main__"` since `serve` checks it internally.
