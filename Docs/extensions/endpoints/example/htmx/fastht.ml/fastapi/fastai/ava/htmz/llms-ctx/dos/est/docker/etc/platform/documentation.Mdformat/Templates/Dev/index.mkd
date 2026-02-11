@@ -1,11 +1,1440 @@
-'<project title="fastht.ml" summary='FastHTML a python library which brings together Starlette, Uvicorn, HTMX, and fastcore&#39;s `FT` "FastTags" into a library for creating server-rendered hypermedia applications. 
-	The `FastHTML` class itself inherits from `Starlette`, and adds decorator-based routing with many additions, Beforeware, automatic `FT` to HTML rendering, and much more.'>Things to remember when writing # FastHTML apps: 
+<project title="fasthtml" summary='FastHTML a python library which brings together Starlette, Uvicorn, HTMX, and fastcore&#39;s `FT` "FastTags" into a library for creating server-rendered hypermedia applications. 
+	The FastHTML class itself inherits from `Starlette`, and adds decorator-based routing with many additions, Beforeware, automatic `FT` to HTML rendering, and much more.'>Things to remember when writing.# FastHTML apps: 
 - Although parts of its API are inspired by FastAPI, it is *not* compatible with FastAPI syntax and is not targeted at creating API services
 - FastHTML includes support for Pico CSS and the fastlite sqlite library, although using both are optional; sqlalchemy can be used directly or via the fastsql library, and any CSS framework can be used. Support for the Surreal and css-scope-inline libraries are also included, but both are optional
 - FastHTML is compatible with JS-native web components and any vanilla JS library, but not with React, Vue, or Svelte
 - Use `serve()` for running uvicorn (`if __name__ == "__main__"` is not needed since it's automatic)
 - When a title is needed with a response, use `Titled`; note that that already wraps children in `Container`, and already includes both the meta title as well as the H1 element.<docs><doc title="FastHTML concise guide" desc="A brief overview of idiomatic FastHTML apps"># Concise reference
 
+```js
+import * as tvmjs from "@mlc-ai/web-runtime";
+import log from "loglevel";
+import { ChatOptions, MLCEngineConfig } from "./config";
+import { ReloadParams, WorkerRequest, WorkerResponse } from "./message";
+import { InitProgressReport } from "./types";
+import {
+  WebWorkerMLCEngineHandler,
+  WebWorkerMLCEngine,
+  ChatWorker,
+} from "./web_worker";
+import { areArraysEqual, areChatOptionsListEqual } from "./utils";
+import {
+  NoServiceWorkerAPIError,
+  NonWorkerEnvironmentError,
+  ServiceWorkerInitializationError,
+} from "./error";
+
+/* Service Worker Script */
+
+type IServiceWorker = globalThis.ServiceWorker;
+
+/**
+ * Worker handler that can be used in a ServiceWorker.
+ *
+ * @example
+ *
+ * const engine = new MLCEngine();
+ * let handler;
+ * chrome.runtime.onConnect.addListener(function (port) {
+ *   if (handler === undefined) {
+ *     handler = new ServiceWorkerMLCEngineHandler(engine, port);
+ *   } else {
+ *     handler.setPort(port);
+ *   }
+ *   port.onMessage.addListener(handler.onmessage.bind(handler));
+ * });
+ */
+export class ServiceWorkerMLCEngineHandler extends WebWorkerMLCEngineHandler {
+  private clientRegistry = new Map<
+    string,
+    IServiceWorker | Client | MessagePort
+  >();
+  private initRequestUuid?: string;
+
+  constructor() {
+    if (!self || !("addEventListener" in self)) {
+      throw new NonWorkerEnvironmentError("ServiceWorkerMLCEngineHandler");
+    }
+    super();
+    const onmessage = this.onmessage.bind(this);
+
+    this.engine.setInitProgressCallback((report: InitProgressReport) => {
+      const msg: WorkerResponse = {
+        kind: "initProgressCallback",
+        uuid: this.initRequestUuid || "",
+        content: report,
+      };
+      this.postMessage(msg);
+    });
+
+    self.addEventListener("message", (event) => {
+      const message = event as unknown as ExtendableMessageEvent;
+      if (message.source) {
+        this.clientRegistry.set(message.data.uuid, message.source);
+      }
+      message.waitUntil(
+        new Promise((resolve, reject) => {
+          onmessage(message, resolve, reject);
+        }),
+      );
+    });
+  }
+
+  postMessage(message: WorkerResponse) {
+    if (this.clientRegistry.has(message.uuid)) {
+      const client = this.clientRegistry.get(message.uuid);
+      client?.postMessage(message);
+
+      if (message.kind === "return" || message.kind === "throw") {
+        this.clientRegistry.delete(message.uuid);
+      } else {
+        // TODO(nestor): Delete clientRegistry after complete to avoid memory leak?
+      }
+    }
+  }
+
+  onmessage(
+    event: ExtendableMessageEvent,
+    onComplete?: (value: any) => void,
+    onError?: () => void,
+  ): void {
+    const msg = event.data as WorkerRequest;
+    log.trace(
+      `ServiceWorker message: [${msg.kind}] ${JSON.stringify(msg.content)}`,
+    );
+
+    // Special case message handling different from WebWorkerMLCEngineHandler
+    if (msg.kind === "keepAlive") {
+      const reply: WorkerResponse = {
+        kind: "heartbeat",
+        uuid: msg.uuid,
+      };
+      this.postMessage(reply);
+      onComplete?.(reply);
+      return;
+    }
+
+    if (msg.kind === "reload") {
+      this.handleTask(msg.uuid, async () => {
+        const params = msg.content as ReloadParams;
+        // If the modelId, chatOpts, and appConfig are the same, immediately return
+        if (
+          areArraysEqual(this.modelId, params.modelId) &&
+          areChatOptionsListEqual(this.chatOpts, params.chatOpts)
+        ) {
+          log.info("Already loaded the model. Skip loading");
+          const gpuDetectOutput = await tvmjs.detectGPUDevice();
+          if (gpuDetectOutput == undefined) {
+            throw Error("Cannot find WebGPU in the environment");
+          }
+          let gpuLabel = "WebGPU";
+          if (gpuDetectOutput.adapterInfo.description.length != 0) {
+            gpuLabel += " - " + gpuDetectOutput.adapterInfo.description;
+          } else {
+            gpuLabel += " - " + gpuDetectOutput.adapterInfo.vendor;
+          }
+          this.engine.getInitProgressCallback()?.({
+            progress: 1,
+            timeElapsed: 0,
+            text: "Finish loading on " + gpuLabel,
+          });
+          onComplete?.(null);
+          return null;
+        }
+
+        this.initRequestUuid = msg.uuid;
+        await this.engine.reload(params.modelId, params.chatOpts);
+        this.modelId = params.modelId;
+        this.chatOpts = params.chatOpts;
+        onComplete?.(null);
+        return null;
+      });
+      return;
+    }
+
+    // All rest of message handling are the same as WebWorkerMLCEngineHandler
+    super.onmessage(msg, onComplete, onError);
+  }
+}
+
+/* Webapp Client */
+export class ServiceWorker implements ChatWorker {
+  _onmessage: (event: MessageEvent) => void = () => {};
+
+  get onmessage() {
+    return this._onmessage;
+  }
+
+  set onmessage(handler: (event: any) => void) {
+    this._onmessage = handler;
+
+    if (!("serviceWorker" in navigator)) {
+      throw new NoServiceWorkerAPIError();
+    }
+    (navigator.serviceWorker as ServiceWorkerContainer).onmessage = handler;
+  }
+
+  postMessage(message: WorkerRequest) {
+    if (!("serviceWorker" in navigator)) {
+      throw new NoServiceWorkerAPIError();
+    }
+    const serviceWorker = (navigator.serviceWorker as ServiceWorkerContainer)
+      .controller;
+    if (!serviceWorker) {
+      throw new Error("There is no active service worker");
+    }
+    serviceWorker.postMessage(message);
+  }
+}
+
+/**
+ * Create a ServiceWorkerMLCEngine.
+ *
+ * @param modelId model_id of the model to load, either string or string[]. When multiple models
+ *   are provided, we load all models sequentially. Each modelId needs to either be in
+ *   `webllm.prebuiltAppConfig`, or in `engineCOnfig.appConfig`.
+ * @param engineConfig Optionally configures the engine, see `webllm.MLCEngineConfig` for more.
+ * @param chatOpts Extra options to optionally override the `mlc-chat-config.json` of `modelId`.
+ *   The size of which needs to match that of `modelId`; chatOpts[i] will be used for modelId[i].
+ * @returns An initialized `WebLLM.ServiceWorkerMLCEngine` with `modelId` loaded.
+ */
+export async function CreateServiceWorkerMLCEngine(
+  modelId: string | string[],
+  engineConfig?: MLCEngineConfig,
+  chatOpts?: ChatOptions | ChatOptions[],
+  keepAliveMs = 10000,
+): Promise<ServiceWorkerMLCEngine> {
+  if (!("serviceWorker" in navigator)) {
+    throw new NoServiceWorkerAPIError();
+  }
+  const serviceWorkerAPI = navigator.serviceWorker as ServiceWorkerContainer;
+  const registration = await serviceWorkerAPI.ready;
+  const serviceWorker = registration.active || serviceWorkerAPI.controller;
+  if (!serviceWorker) {
+    throw new ServiceWorkerInitializationError();
+  }
+  const serviceWorkerMLCEngine = new ServiceWorkerMLCEngine(
+    engineConfig,
+    keepAliveMs,
+  );
+  await serviceWorkerMLCEngine.reload(modelId, chatOpts);
+  return serviceWorkerMLCEngine;
+}
+
+/**
+ * A client of MLCEngine that exposes the same interface
+ */
+export class ServiceWorkerMLCEngine extends WebWorkerMLCEngine {
+  missedHeartbeat = 0;
+
+  constructor(engineConfig?: MLCEngineConfig, keepAliveMs = 10000) {
+    if (!("serviceWorker" in navigator)) {
+      throw new NoServiceWorkerAPIError();
+    }
+    super(new ServiceWorker(), engineConfig);
+
+    // Keep alive through periodical heartbeat signals
+    setInterval(() => {
+      this.worker.postMessage({ kind: "keepAlive", uuid: crypto.randomUUID() });
+      this.missedHeartbeat += 1;
+      log.trace("missedHeartbeat", this.missedHeartbeat);
+    }, keepAliveMs);
+  }
+
+  onmessage(event: any): void {
+    const msg = event.data;
+    log.trace(
+      `MLC client message: [${msg.kind}] ${JSON.stringify(msg.content)}`,
+    );
+    try {
+      if (msg.kind === "heartbeat") {
+        this.missedHeartbeat = 0;
+        return;
+      }
+      super.onmessage(msg);
+    } catch (err: any) {
+      // This is expected to throw if user has multiple windows open
+      if (!err.message.startsWith("return from a unknown uuid")) {
+        log.error("CreateWebServiceWorkerMLCEngine.onmessage", err);
+      }
+    }
+  }
+}
+```
+# orjson
+
+orjson is a fast, correct JSON library for Python. It
+[benchmarks](https://github.com/ijl/orjson?tab=readme-ov-file#performance) as the fastest Python
+library for JSON and is more correct than the standard json library or other
+third-party libraries. It serializes
+[dataclass](https://github.com/ijl/orjson?tab=readme-ov-file#dataclass),
+[datetime](https://github.com/ijl/orjson?tab=readme-ov-file#datetime),
+[numpy](https://github.com/ijl/orjson?tab=readme-ov-file#numpy), and
+[UUID](https://github.com/ijl/orjson?tab=readme-ov-file#uuid) instances natively.
+
+[orjson.dumps()](https://github.com/ijl/orjson?tab=readme-ov-file#serialize) is
+something like 10x as fast as `json`, serializes
+common types and subtypes, has a `default` parameter for the caller to specify
+how to serialize arbitrary types, and has a number of flags controlling output.
+
+[orjson.loads()](https://github.com/ijl/orjson?tab=readme-ov-file#deserialize)
+is something like 2x as fast as `json`, and is strictly compliant with UTF-8 and
+RFC 8259 ("The JavaScript Object Notation (JSON) Data Interchange Format").
+
+Reading from and writing to files, line-delimited JSON files, and so on is
+not provided by the library.
+
+orjson supports CPython 3.10, 3.11, 3.12, 3.13, 3.14, and 3.15.
+
+It distributes amd64/x86_64/x64, i686/x86, aarch64/arm64/armv8, arm7,
+ppc64le/POWER8, and s390x wheels for Linux, amd64 and aarch64 wheels
+for macOS, and amd64, i686, and aarch64 wheels for Windows.
+
+Wheels published to PyPI for amd64 run on x86-64-v1 (2003)
+or later, but will at runtime use AVX-512 if available for a
+significant performance benefit; aarch64 wheels run on ARMv8-A (2011) or
+later.
+
+orjson does not and will not support PyPy, embedded Python builds for
+Android/iOS, or PEP 554 subinterpreters.
+
+orjson may support PEP 703 free-threading when it is stable.
+
+Releases follow semantic versioning and serializing a new object type
+without an opt-in flag is considered a breaking change.
+
+orjson contains source code licensed under the Mozilla Public License 2.0,
+Apache 2.0, and MIT licenses. The repository from which PyPI artifacts are
+published is [github.com/ijl/orjson](https://github.com/ijl/orjson) and an
+alternative repository is [codeberg.org/ijl/orjson](https://codeberg.org/ijl/orjson).
+There is no open issue tracker or pull requests due to signal-to-noise ratio.
+There is a [CHANGELOG](https://github.com/ijl/orjson/blob/master/CHANGELOG.md)
+available in the repository.
+
+1. [Usage](https://github.com/ijl/orjson?tab=readme-ov-file#usage)
+    1. [Install](https://github.com/ijl/orjson?tab=readme-ov-file#install)
+    2. [Quickstart](https://github.com/ijl/orjson?tab=readme-ov-file#quickstart)
+    3. [Migrating](https://github.com/ijl/orjson?tab=readme-ov-file#migrating)
+    4. [Serialize](https://github.com/ijl/orjson?tab=readme-ov-file#serialize)
+        1. [default](https://github.com/ijl/orjson?tab=readme-ov-file#default)
+        2. [option](https://github.com/ijl/orjson?tab=readme-ov-file#option)
+        3. [Fragment](https://github.com/ijl/orjson?tab=readme-ov-file#fragment)
+    5. [Deserialize](https://github.com/ijl/orjson?tab=readme-ov-file#deserialize)
+2. [Types](https://github.com/ijl/orjson?tab=readme-ov-file#types)
+    1. [dataclass](https://github.com/ijl/orjson?tab=readme-ov-file#dataclass)
+    2. [datetime](https://github.com/ijl/orjson?tab=readme-ov-file#datetime)
+    3. [enum](https://github.com/ijl/orjson?tab=readme-ov-file#enum)
+    4. [float](https://github.com/ijl/orjson?tab=readme-ov-file#float)
+    5. [int](https://github.com/ijl/orjson?tab=readme-ov-file#int)
+    6. [numpy](https://github.com/ijl/orjson?tab=readme-ov-file#numpy)
+    7. [str](https://github.com/ijl/orjson?tab=readme-ov-file#str)
+    8. [uuid](https://github.com/ijl/orjson?tab=readme-ov-file#uuid)
+3. [Testing](https://github.com/ijl/orjson?tab=readme-ov-file#testing)
+4. [Performance](https://github.com/ijl/orjson?tab=readme-ov-file#performance)
+    1. [Latency](https://github.com/ijl/orjson?tab=readme-ov-file#latency)
+    2. [Reproducing](https://github.com/ijl/orjson?tab=readme-ov-file#reproducing)
+5. [Questions](https://github.com/ijl/orjson?tab=readme-ov-file#questions)
+6. [Packaging](https://github.com/ijl/orjson?tab=readme-ov-file#packaging)
+7. [License](https://github.com/ijl/orjson?tab=readme-ov-file#license)
+
+## Usage
+
+### Install
+
+To install a wheel from PyPI, install the `orjson` package.
+
+In `requirements.in` or `requirements.txt` format, specify:
+
+```txt
+orjson >= 3.10,<4
+```
+
+In `pyproject.toml` format, specify:
+
+```toml
+orjson = "^3.10"
+```
+
+To build a wheel, see [packaging](https://github.com/ijl/orjson?tab=readme-ov-file#packaging).
+
+### Quickstart
+
+This is an example of serializing, with options specified, and deserializing:
+
+```python
+>>> import orjson, datetime, numpy
+>>> data = {
+    "type": "job",
+    "created_at": datetime.datetime(1970, 1, 1),
+    "status": "🆗",
+    "payload": numpy.array([[1, 2], [3, 4]]),
+}
+>>> orjson.dumps(data, option=orjson.OPT_NAIVE_UTC | orjson.OPT_SERIALIZE_NUMPY)
+b'{"type":"job","created_at":"1970-01-01T00:00:00+00:00","status":"\xf0\x9f\x86\x97","payload":[[1,2],[3,4]]}'
+>>> orjson.loads(_)
+{'type': 'job', 'created_at': '1970-01-01T00:00:00+00:00', 'status': '🆗', 'payload': [[1, 2], [3, 4]]}
+```
+
+### Migrating
+
+orjson version 3 serializes more types than version 2. Subclasses of `str`,
+`int`, `dict`, and `list` are now serialized. This is faster and more similar
+to the standard library. It can be disabled with
+`orjson.OPT_PASSTHROUGH_SUBCLASS`.`dataclasses.dataclass` instances
+are now serialized by default and cannot be customized in a
+`default` function unless `option=orjson.OPT_PASSTHROUGH_DATACLASS` is
+specified. `uuid.UUID` instances are serialized by default.
+For any type that is now serialized,
+implementations in a `default` function and options enabling them can be
+removed but do not need to be. There was no change in deserialization.
+
+To migrate from the standard library, the largest difference is that
+`orjson.dumps` returns `bytes` and `json.dumps` returns a `str`.
+
+Users with `dict` objects using non-`str` keys should specify `option=orjson.OPT_NON_STR_KEYS`.
+
+`sort_keys` is replaced by `option=orjson.OPT_SORT_KEYS`.
+
+`indent` is replaced by `option=orjson.OPT_INDENT_2` and other levels of indentation are not
+supported.
+
+`ensure_ascii` is probably not relevant today and UTF-8 characters cannot be
+escaped to ASCII.
+
+### Serialize
+
+```python
+def dumps(
+    __obj: Any,
+    default: Optional[Callable[[Any], Any]] = ...,
+    option: Optional[int] = ...,
+) -> bytes: ...
+```
+
+`dumps()` serializes Python objects to JSON.
+
+It natively serializes
+`str`, `dict`, `list`, `tuple`, `int`, `float`, `bool`, `None`,
+`dataclasses.dataclass`, `typing.TypedDict`, `datetime.datetime`,
+`datetime.date`, `datetime.time`, `uuid.UUID`, `numpy.ndarray`, and
+`orjson.Fragment` instances. It supports arbitrary types through `default`. It
+serializes subclasses of `str`, `int`, `dict`, `list`,
+`dataclasses.dataclass`, and `enum.Enum`. It does not serialize subclasses
+of `tuple` to avoid serializing `namedtuple` objects as arrays. To avoid
+serializing subclasses, specify the option `orjson.OPT_PASSTHROUGH_SUBCLASS`.
+
+The output is a `bytes` object containing UTF-8.
+
+The global interpreter lock (GIL) is held for the duration of the call.
+
+It raises `JSONEncodeError` on an unsupported type. This exception message
+describes the invalid object with the error message
+`Type is not JSON serializable: ...`. To fix this, specify
+[default](https://github.com/ijl/orjson?tab=readme-ov-file#default).
+
+It raises `JSONEncodeError` on a `str` that contains invalid UTF-8.
+
+It raises `JSONEncodeError` on an integer that exceeds 64 bits by default or,
+with `OPT_STRICT_INTEGER`, 53 bits.
+
+It raises `JSONEncodeError` if a `dict` has a key of a type other than `str`,
+unless `OPT_NON_STR_KEYS` is specified.
+
+It raises `JSONEncodeError` if the output of `default` recurses to handling by
+`default` more than 254 levels deep.
+
+It raises `JSONEncodeError` on circular references.
+
+It raises `JSONEncodeError`  if a `tzinfo` on a datetime object is
+unsupported.
+
+`JSONEncodeError` is a subclass of `TypeError`. This is for compatibility
+with the standard library.
+
+If the failure was caused by an exception in `default` then
+`JSONEncodeError` chains the original exception as `__cause__`.
+
+#### default
+
+To serialize a subclass or arbitrary types, specify `default` as a
+callable that returns a supported type. `default` may be a function,
+lambda, or callable class instance. To specify that a type was not
+handled by `default`, raise an exception such as `TypeError`.
+
+```python
+>>> import orjson, decimal
+>>>
+def default(obj):
+    if isinstance(obj, decimal.Decimal):
+        return str(obj)
+    raise TypeError
+
+>>> orjson.dumps(decimal.Decimal("0.0842389659712649442845"))
+JSONEncodeError: Type is not JSON serializable: decimal.Decimal
+>>> orjson.dumps(decimal.Decimal("0.0842389659712649442845"), default=default)
+b'"0.0842389659712649442845"'
+>>> orjson.dumps({1, 2}, default=default)
+orjson.JSONEncodeError: Type is not JSON serializable: set
+```
+
+The `default` callable may return an object that itself
+must be handled by `default` up to 254 times before an exception
+is raised.
+
+It is important that `default` raise an exception if a type cannot be handled.
+Python otherwise implicitly returns `None`, which appears to the caller
+like a legitimate value and is serialized:
+
+```python
+>>> import orjson, json
+>>>
+def default(obj):
+    if isinstance(obj, decimal.Decimal):
+        return str(obj)
+
+>>> orjson.dumps({"set":{1, 2}}, default=default)
+b'{"set":null}'
+>>> json.dumps({"set":{1, 2}}, default=default)
+'{"set":null}'
+```
+
+#### option
+
+To modify how data is serialized, specify `option`. Each `option` is an integer
+constant in `orjson`. To specify multiple options, mask them together, e.g.,
+`option=orjson.OPT_STRICT_INTEGER | orjson.OPT_NAIVE_UTC`.
+
+##### OPT_APPEND_NEWLINE
+
+Append `\n` to the output. This is a convenience and optimization for the
+pattern of `dumps(...) + "\n"`. `bytes` objects are immutable and this
+pattern copies the original contents.
+
+```python
+>>> import orjson
+>>> orjson.dumps([])
+b"[]"
+>>> orjson.dumps([], option=orjson.OPT_APPEND_NEWLINE)
+b"[]\n"
+```
+
+##### OPT_INDENT_2
+
+Pretty-print output with an indent of two spaces. This is equivalent to
+`indent=2` in the standard library. Pretty printing is slower and the output
+larger. This option is compatible with all other options.
+
+```python
+>>> import orjson
+>>> orjson.dumps({"a": "b", "c": {"d": True}, "e": [1, 2]})
+b'{"a":"b","c":{"d":true},"e":[1,2]}'
+>>> orjson.dumps(
+    {"a": "b", "c": {"d": True}, "e": [1, 2]},
+    option=orjson.OPT_INDENT_2
+)
+b'{\n  "a": "b",\n  "c": {\n    "d": true\n  },\n  "e": [\n    1,\n    2\n  ]\n}'
+```
+
+If displayed, the indentation and linebreaks appear like this:
+
+```json
+{
+  "a": "b",
+  "c": {
+    "d": true
+  },
+  "e": [
+    1,
+    2
+  ]
+}
+```
+
+This measures serializing the github.json fixture as compact (52KiB) or
+pretty (64KiB):
+
+| Library   |   compact (ms) |   pretty (ms) |   vs. orjson |
+|-----------|----------------|---------------|--------------|
+| orjson    |           0.01 |          0.02 |            1 |
+| json      |           0.13 |          0.54 |           34 |
+
+This measures serializing the citm_catalog.json fixture, more of a worst
+case due to the amount of nesting and newlines, as compact (489KiB) or
+pretty (1.1MiB):
+
+| Library   |   compact (ms) |   pretty (ms) |   vs. orjson |
+|-----------|----------------|---------------|--------------|
+| orjson    |           0.25 |          0.45 |          1   |
+| json      |           3.01 |         24.42 |         54.4 |
+
+This can be reproduced using the `pyindent` script.
+
+##### OPT_NAIVE_UTC
+
+Serialize `datetime.datetime` objects without a `tzinfo` as UTC. This
+has no effect on `datetime.datetime` objects that have `tzinfo` set.
+
+```python
+>>> import orjson, datetime
+>>> orjson.dumps(
+        datetime.datetime(1970, 1, 1, 0, 0, 0),
+    )
+b'"1970-01-01T00:00:00"'
+>>> orjson.dumps(
+        datetime.datetime(1970, 1, 1, 0, 0, 0),
+        option=orjson.OPT_NAIVE_UTC,
+    )
+b'"1970-01-01T00:00:00+00:00"'
+```
+
+##### OPT_NON_STR_KEYS
+
+Serialize `dict` keys of type other than `str`. This allows `dict` keys
+to be one of `str`, `int`, `float`, `bool`, `None`, `datetime.datetime`,
+`datetime.date`, `datetime.time`, `enum.Enum`, and `uuid.UUID`. For comparison,
+the standard library serializes `str`, `int`, `float`, `bool` or `None` by
+default. orjson benchmarks as being faster at serializing non-`str` keys
+than other libraries. This option is slower for `str` keys than the default.
+
+```python
+>>> import orjson, datetime, uuid
+>>> orjson.dumps(
+        {uuid.UUID("7202d115-7ff3-4c81-a7c1-2a1f067b1ece"): [1, 2, 3]},
+        option=orjson.OPT_NON_STR_KEYS,
+    )
+b'{"7202d115-7ff3-4c81-a7c1-2a1f067b1ece":[1,2,3]}'
+>>> orjson.dumps(
+        {datetime.datetime(1970, 1, 1, 0, 0, 0): [1, 2, 3]},
+        option=orjson.OPT_NON_STR_KEYS | orjson.OPT_NAIVE_UTC,
+    )
+b'{"1970-01-01T00:00:00+00:00":[1,2,3]}'
+```
+
+These types are generally serialized how they would be as
+values, e.g., `datetime.datetime` is still an RFC 3339 string and respects
+options affecting it. The exception is that `int` serialization does not
+respect `OPT_STRICT_INTEGER`.
+
+This option has the risk of creating duplicate keys. This is because non-`str`
+objects may serialize to the same `str` as an existing key, e.g.,
+`{"1": true, 1: false}`. The last key to be inserted to the `dict` will be
+serialized last and a JSON deserializer will presumably take the last
+occurrence of a key (in the above, `false`). The first value will be lost.
+
+This option is compatible with `orjson.OPT_SORT_KEYS`. If sorting is used,
+note the sort is unstable and will be unpredictable for duplicate keys.
+
+```python
+>>> import orjson, datetime
+>>> orjson.dumps(
+    {"other": 1, datetime.date(1970, 1, 5): 2, datetime.date(1970, 1, 3): 3},
+    option=orjson.OPT_NON_STR_KEYS | orjson.OPT_SORT_KEYS
+)
+b'{"1970-01-03":3,"1970-01-05":2,"other":1}'
+```
+
+This measures serializing 589KiB of JSON comprising a `list` of 100 `dict`
+in which each `dict` has both 365 randomly-sorted `int` keys representing epoch
+timestamps as well as one `str` key and the value for each key is a
+single integer. In "str keys", the keys were converted to `str` before
+serialization, and orjson still specifes `option=orjson.OPT_NON_STR_KEYS`
+(which is always somewhat slower).
+
+| Library   |   str keys (ms) |   int keys (ms) | int keys sorted (ms)   |
+|-----------|-----------------|-----------------|------------------------|
+| orjson    |            0.5  |            0.93 | 2.08                   |
+| json      |            2.72 |            3.59 |                        |
+
+json is blank because it
+raises `TypeError` on attempting to sort before converting all keys to `str`.
+This can be reproduced using the `pynonstr` script.
+
+##### OPT_OMIT_MICROSECONDS
+
+Do not serialize the `microsecond` field on `datetime.datetime` and
+`datetime.time` instances.
+
+```python
+>>> import orjson, datetime
+>>> orjson.dumps(
+        datetime.datetime(1970, 1, 1, 0, 0, 0, 1),
+    )
+b'"1970-01-01T00:00:00.000001"'
+>>> orjson.dumps(
+        datetime.datetime(1970, 1, 1, 0, 0, 0, 1),
+        option=orjson.OPT_OMIT_MICROSECONDS,
+    )
+b'"1970-01-01T00:00:00"'
+```
+
+##### OPT_PASSTHROUGH_DATACLASS
+
+Passthrough `dataclasses.dataclass` instances to `default`. This allows
+customizing their output but is much slower.
+
+
+```python
+>>> import orjson, dataclasses
+>>>
+@dataclasses.dataclass
+class User:
+    id: str
+    name: str
+    password: str
+
+def default(obj):
+    if isinstance(obj, User):
+        return {"id": obj.id, "name": obj.name}
+    raise TypeError
+
+>>> orjson.dumps(User("3b1", "asd", "zxc"))
+b'{"id":"3b1","name":"asd","password":"zxc"}'
+>>> orjson.dumps(User("3b1", "asd", "zxc"), option=orjson.OPT_PASSTHROUGH_DATACLASS)
+TypeError: Type is not JSON serializable: User
+>>> orjson.dumps(
+        User("3b1", "asd", "zxc"),
+        option=orjson.OPT_PASSTHROUGH_DATACLASS,
+        default=default,
+    )
+b'{"id":"3b1","name":"asd"}'
+```
+
+##### OPT_PASSTHROUGH_DATETIME
+
+Passthrough `datetime.datetime`, `datetime.date`, and `datetime.time` instances
+to `default`. This allows serializing datetimes to a custom format, e.g.,
+HTTP dates:
+
+```python
+>>> import orjson, datetime
+>>>
+def default(obj):
+    if isinstance(obj, datetime.datetime):
+        return obj.strftime("%a, %d %b %Y %H:%M:%S GMT")
+    raise TypeError
+
+>>> orjson.dumps({"created_at": datetime.datetime(1970, 1, 1)})
+b'{"created_at":"1970-01-01T00:00:00"}'
+>>> orjson.dumps({"created_at": datetime.datetime(1970, 1, 1)}, option=orjson.OPT_PASSTHROUGH_DATETIME)
+TypeError: Type is not JSON serializable: datetime.datetime
+>>> orjson.dumps(
+        {"created_at": datetime.datetime(1970, 1, 1)},
+        option=orjson.OPT_PASSTHROUGH_DATETIME,
+        default=default,
+    )
+b'{"created_at":"Thu, 01 Jan 1970 00:00:00 GMT"}'
+```
+
+This does not affect datetimes in `dict` keys if using OPT_NON_STR_KEYS.
+
+##### OPT_PASSTHROUGH_SUBCLASS
+
+Passthrough subclasses of builtin types to `default`.
+
+```python
+>>> import orjson
+>>>
+class Secret(str):
+    pass
+
+def default(obj):
+    if isinstance(obj, Secret):
+        return "******"
+    raise TypeError
+
+>>> orjson.dumps(Secret("zxc"))
+b'"zxc"'
+>>> orjson.dumps(Secret("zxc"), option=orjson.OPT_PASSTHROUGH_SUBCLASS)
+TypeError: Type is not JSON serializable: Secret
+>>> orjson.dumps(Secret("zxc"), option=orjson.OPT_PASSTHROUGH_SUBCLASS, default=default)
+b'"******"'
+```
+
+This does not affect serializing subclasses as `dict` keys if using
+OPT_NON_STR_KEYS.
+
+##### OPT_SERIALIZE_DATACLASS
+
+This is deprecated and has no effect in version 3. In version 2 this was
+required to serialize  `dataclasses.dataclass` instances. For more, see
+[dataclass](https://github.com/ijl/orjson?tab=readme-ov-file#dataclass).
+
+##### OPT_SERIALIZE_NUMPY
+
+Serialize `numpy.ndarray` instances. For more, see
+[numpy](https://github.com/ijl/orjson?tab=readme-ov-file#numpy).
+
+##### OPT_SERIALIZE_UUID
+
+This is deprecated and has no effect in version 3. In version 2 this was
+required to serialize `uuid.UUID` instances. For more, see
+[UUID](https://github.com/ijl/orjson?tab=readme-ov-file#UUID).
+
+##### OPT_SORT_KEYS
+
+Serialize `dict` keys in sorted order. The default is to serialize in an
+unspecified order. This is equivalent to `sort_keys=True` in the standard
+library.
+
+This can be used to ensure the order is deterministic for hashing or tests.
+It has a substantial performance penalty and is not recommended in general.
+
+```python
+>>> import orjson
+>>> orjson.dumps({"b": 1, "c": 2, "a": 3})
+b'{"b":1,"c":2,"a":3}'
+>>> orjson.dumps({"b": 1, "c": 2, "a": 3}, option=orjson.OPT_SORT_KEYS)
+b'{"a":3,"b":1,"c":2}'
+```
+
+This measures serializing the twitter.json fixture unsorted and sorted:
+
+| Library   |   unsorted (ms) |   sorted (ms) |   vs. orjson |
+|-----------|-----------------|---------------|--------------|
+| orjson    |            0.11 |          0.3  |          1   |
+| json      |            1.36 |          1.93 |          6.4 |
+
+The benchmark can be reproduced using the `pysort` script.
+
+The sorting is not collation/locale-aware:
+
+```python
+>>> import orjson
+>>> orjson.dumps({"a": 1, "ä": 2, "A": 3}, option=orjson.OPT_SORT_KEYS)
+b'{"A":3,"a":1,"\xc3\xa4":2}'
+```
+
+This is the same sorting behavior as the standard library.
+
+`dataclass` also serialize as maps but this has no effect on them.
+
+##### OPT_STRICT_INTEGER
+
+Enforce 53-bit limit on integers. The limit is otherwise 64 bits, the same as
+the Python standard library. For more, see [int](https://github.com/ijl/orjson?tab=readme-ov-file#int).
+
+##### OPT_UTC_Z
+
+Serialize a UTC timezone on `datetime.datetime` instances as `Z` instead
+of `+00:00`.
+
+```python
+>>> import orjson, datetime, zoneinfo
+>>> orjson.dumps(
+        datetime.datetime(1970, 1, 1, 0, 0, 0, tzinfo=zoneinfo.ZoneInfo("UTC")),
+    )
+b'"1970-01-01T00:00:00+00:00"'
+>>> orjson.dumps(
+        datetime.datetime(1970, 1, 1, 0, 0, 0, tzinfo=zoneinfo.ZoneInfo("UTC")),
+        option=orjson.OPT_UTC_Z
+    )
+b'"1970-01-01T00:00:00Z"'
+```
+
+#### Fragment
+
+`orjson.Fragment` includes already-serialized JSON in a document. This is an
+efficient way to include JSON blobs from a cache, JSONB field, or separately
+serialized object without first deserializing to Python objects via `loads()`.
+
+```python
+>>> import orjson
+>>> orjson.dumps({"key": "zxc", "data": orjson.Fragment(b'{"a": "b", "c": 1}')})
+b'{"key":"zxc","data":{"a": "b", "c": 1}}'
+```
+
+It does no reformatting: `orjson.OPT_INDENT_2` will not affect a
+compact blob nor will a pretty-printed JSON blob be rewritten as compact.
+
+The input must be `bytes` or `str` and given as a positional argument.
+
+This raises `orjson.JSONEncodeError` if a `str` is given and the input is
+not valid UTF-8. It otherwise does no validation and it is possible to
+write invalid JSON. This does not escape characters. The implementation is
+tested to not crash if given invalid strings or invalid JSON.
+
+### Deserialize
+
+```python
+def loads(__obj: Union[bytes, bytearray, memoryview, str]) -> Any: ...
+```
+
+`loads()` deserializes JSON to Python objects. It deserializes to `dict`,
+`list`, `int`, `float`, `str`, `bool`, and `None` objects.
+
+`bytes`, `bytearray`, `memoryview`, and `str` input are accepted. If the input
+exists as a `memoryview`, `bytearray`, or `bytes` object, it is recommended to
+pass these directly rather than creating an unnecessary `str` object. That is,
+`orjson.loads(b"{}")` instead of `orjson.loads(b"{}".decode("utf-8"))`. This
+has lower memory usage and lower latency.
+
+The input must be valid UTF-8.
+
+orjson maintains a cache of map keys for the duration of the process. This
+causes a net reduction in memory usage by avoiding duplicate strings. The
+keys must be at most 64 bytes to be cached and 2048 entries are stored.
+
+The global interpreter lock (GIL) is held for the duration of the call.
+
+It raises `JSONDecodeError` if given an invalid type or invalid
+JSON. This includes if the input contains `NaN`, `Infinity`, or `-Infinity`,
+which the standard library allows, but is not valid JSON.
+
+It raises `JSONDecodeError` if a combination of array or object recurses
+1024 levels deep.
+
+It raises `JSONDecodeError` if unable to allocate a buffer large enough
+to parse the document.
+
+`JSONDecodeError` is a subclass of `json.JSONDecodeError` and `ValueError`.
+This is for compatibility with the standard library.
+
+## Types
+
+### dataclass
+
+orjson serializes instances of `dataclasses.dataclass` natively. It serializes
+instances 40-50x as fast as other libraries and avoids a severe slowdown seen
+in other libraries compared to serializing `dict`.
+
+It is supported to pass all variants of dataclasses, including dataclasses
+using `__slots__`, frozen dataclasses, those with optional or default
+attributes, and subclasses. There is a performance benefit to not
+using `__slots__`.
+
+| Library   |   dict (ms) |   dataclass (ms) |   vs. orjson |
+|-----------|-------------|------------------|--------------|
+| orjson    |        0.43 |             0.95 |            1 |
+| json      |        5.81 |            38.32 |           40 |
+
+This measures serializing 555KiB of JSON, orjson natively and other libraries
+using `default` to serialize the output of `dataclasses.asdict()`. This can be
+reproduced using the `pydataclass` script.
+
+Dataclasses are serialized as maps, with every attribute serialized and in
+the order given on class definition:
+
+```python
+>>> import dataclasses, orjson, typing
+
+@dataclasses.dataclass
+class Member:
+    id: int
+    active: bool = dataclasses.field(default=False)
+
+@dataclasses.dataclass
+class Object:
+    id: int
+    name: str
+    members: typing.List[Member]
+
+>>> orjson.dumps(Object(1, "a", [Member(1, True), Member(2)]))
+b'{"id":1,"name":"a","members":[{"id":1,"active":true},{"id":2,"active":false}]}'
+```
+
+### datetime
+
+orjson serializes `datetime.datetime` objects to
+[RFC 3339](https://tools.ietf.org/html/rfc3339) format,
+e.g., "1970-01-01T00:00:00+00:00". This is a subset of ISO 8601 and is
+compatible with `isoformat()` in the standard library.
+
+```python
+>>> import orjson, datetime, zoneinfo
+>>> orjson.dumps(
+    datetime.datetime(2018, 12, 1, 2, 3, 4, 9, tzinfo=zoneinfo.ZoneInfo("Australia/Adelaide"))
+)
+b'"2018-12-01T02:03:04.000009+10:30"'
+>>> orjson.dumps(
+    datetime.datetime(2100, 9, 1, 21, 55, 2).replace(tzinfo=zoneinfo.ZoneInfo("UTC"))
+)
+b'"2100-09-01T21:55:02+00:00"'
+>>> orjson.dumps(
+    datetime.datetime(2100, 9, 1, 21, 55, 2)
+)
+b'"2100-09-01T21:55:02"'
+```
+
+`datetime.datetime` supports instances with a `tzinfo` that is `None`,
+`datetime.timezone.utc`, a timezone instance from the standard library `zoneinfo`
+module, or a timezone instance from the third-party `pendulum`, `pytz`, or
+`dateutil`/`arrow` libraries.
+
+It is fastest to use the standard library's `zoneinfo.ZoneInfo` for timezones.
+
+`datetime.time` objects must not have a `tzinfo`.
+
+```python
+>>> import orjson, datetime
+>>> orjson.dumps(datetime.time(12, 0, 15, 290))
+b'"12:00:15.000290"'
+```
+
+`datetime.date` objects will always serialize.
+
+```python
+>>> import orjson, datetime
+>>> orjson.dumps(datetime.date(1900, 1, 2))
+b'"1900-01-02"'
+```
+
+Errors with `tzinfo` result in `JSONEncodeError` being raised.
+
+To disable serialization of `datetime` objects specify the option
+`orjson.OPT_PASSTHROUGH_DATETIME`.
+
+To use "Z" suffix instead of "+00:00" to indicate UTC ("Zulu") time, use the option
+`orjson.OPT_UTC_Z`.
+
+To assume datetimes without timezone are UTC, use the option `orjson.OPT_NAIVE_UTC`.
+
+### enum
+
+orjson serializes enums natively. Options apply to their values.
+
+```python
+>>> import enum, datetime, orjson
+>>>
+class DatetimeEnum(enum.Enum):
+    EPOCH = datetime.datetime(1970, 1, 1, 0, 0, 0)
+>>> orjson.dumps(DatetimeEnum.EPOCH)
+b'"1970-01-01T00:00:00"'
+>>> orjson.dumps(DatetimeEnum.EPOCH, option=orjson.OPT_NAIVE_UTC)
+b'"1970-01-01T00:00:00+00:00"'
+```
+
+Enums with members that are not supported types can be serialized using
+`default`:
+
+```python
+>>> import enum, orjson
+>>>
+class Custom:
+    def __init__(self, val):
+        self.val = val
+
+def default(obj):
+    if isinstance(obj, Custom):
+        return obj.val
+    raise TypeError
+
+class CustomEnum(enum.Enum):
+    ONE = Custom(1)
+
+>>> orjson.dumps(CustomEnum.ONE, default=default)
+b'1'
+```
+
+### float
+
+orjson serializes and deserializes double precision floats with no loss of
+precision and consistent rounding.
+
+`orjson.dumps()` serializes Nan, Infinity, and -Infinity, which are not
+compliant JSON, as `null`:
+
+```python
+>>> import orjson, json
+>>> orjson.dumps([float("NaN"), float("Infinity"), float("-Infinity")])
+b'[null,null,null]'
+>>> json.dumps([float("NaN"), float("Infinity"), float("-Infinity")])
+'[NaN, Infinity, -Infinity]'
+```
+
+### int
+
+orjson serializes and deserializes 64-bit integers by default. The range
+supported is a signed 64-bit integer's minimum (-9223372036854775807) to
+an unsigned 64-bit integer's maximum (18446744073709551615). This
+is widely compatible, but there are implementations
+that only support 53-bits for integers, e.g.,
+web browsers. For those implementations, `dumps()` can be configured to
+raise a `JSONEncodeError` on values exceeding the 53-bit range.
+
+```python
+>>> import orjson
+>>> orjson.dumps(9007199254740992)
+b'9007199254740992'
+>>> orjson.dumps(9007199254740992, option=orjson.OPT_STRICT_INTEGER)
+JSONEncodeError: Integer exceeds 53-bit range
+>>> orjson.dumps(-9007199254740992, option=orjson.OPT_STRICT_INTEGER)
+JSONEncodeError: Integer exceeds 53-bit range
+```
+
+### numpy
+
+orjson natively serializes `numpy.ndarray` and individual
+`numpy.float64`, `numpy.float32`, `numpy.float16` (`numpy.half`),
+`numpy.int64`, `numpy.int32`, `numpy.int16`, `numpy.int8`,
+`numpy.uint64`, `numpy.uint32`, `numpy.uint16`, `numpy.uint8`,
+`numpy.uintp`, `numpy.intp`, `numpy.datetime64`, and `numpy.bool`
+instances.
+
+orjson is compatible with both numpy v1 and v2.
+
+orjson is faster than all compared libraries at serializing
+numpy instances. Serializing numpy data requires specifying
+`option=orjson.OPT_SERIALIZE_NUMPY`.
+
+```python
+>>> import orjson, numpy
+>>> orjson.dumps(
+        numpy.array([[1, 2, 3], [4, 5, 6]]),
+        option=orjson.OPT_SERIALIZE_NUMPY,
+)
+b'[[1,2,3],[4,5,6]]'
+```
+
+The array must be a contiguous C array (`C_CONTIGUOUS`) and one of the
+supported datatypes.
+
+Note a difference between serializing `numpy.float32` using `ndarray.tolist()`
+or `orjson.dumps(..., option=orjson.OPT_SERIALIZE_NUMPY)`: `tolist()` converts
+to a `double` before serializing and orjson's native path does not. This
+can result in different rounding.
+
+`numpy.datetime64` instances are serialized as RFC 3339 strings and
+datetime options affect them.
+
+```python
+>>> import orjson, numpy
+>>> orjson.dumps(
+        numpy.datetime64("2021-01-01T00:00:00.172"),
+        option=orjson.OPT_SERIALIZE_NUMPY,
+)
+b'"2021-01-01T00:00:00.172000"'
+>>> orjson.dumps(
+        numpy.datetime64("2021-01-01T00:00:00.172"),
+        option=(
+            orjson.OPT_SERIALIZE_NUMPY |
+            orjson.OPT_NAIVE_UTC |
+            orjson.OPT_OMIT_MICROSECONDS
+        ),
+)
+b'"2021-01-01T00:00:00+00:00"'
+```
+
+If an array is not a contiguous C array, contains an unsupported datatype,
+or contains a `numpy.datetime64` using an unsupported representation
+(e.g., picoseconds), orjson falls through to `default`. In `default`,
+`obj.tolist()` can be specified.
+
+If an array is not in the native endianness, e.g., an array of big-endian values
+on a little-endian system, `orjson.JSONEncodeError`  is raised.
+
+If an array is malformed, `orjson.JSONEncodeError` is raised.
+
+This measures serializing 92MiB of JSON from an `numpy.ndarray` with
+dimensions of `(50000, 100)` and `numpy.float64` values:
+
+| Library   | Latency (ms)   |   RSS diff (MiB) |   vs. orjson |
+|-----------|----------------|------------------|--------------|
+| orjson    | 105            |              105 |          1   |
+| json      | 1,481          |              295 |         14.2 |
+
+This measures serializing 100MiB of JSON from an `numpy.ndarray` with
+dimensions of `(100000, 100)` and `numpy.int32` values:
+
+| Library   |   Latency (ms) |   RSS diff (MiB) |   vs. orjson |
+|-----------|----------------|------------------|--------------|
+| orjson    |             68 |              119 |          1   |
+| json      |            684 |              501 |         10.1 |
+
+This measures serializing 105MiB of JSON from an `numpy.ndarray` with
+dimensions of `(100000, 200)` and `numpy.bool` values:
+
+| Library   |   Latency (ms) |   RSS diff (MiB) |   vs. orjson |
+|-----------|----------------|------------------|--------------|
+| orjson    |             50 |              125 |          1   |
+| json      |            573 |              398 |         11.5 |
+
+In these benchmarks, orjson serializes natively and `json` serializes
+`ndarray.tolist()` via `default`. The RSS column measures peak memory
+usage during serialization. This can be reproduced using the `pynumpy` script.
+
+orjson does not have an installation or compilation dependency on numpy. The
+implementation is independent, reading `numpy.ndarray` using
+`PyArrayInterface`.
+
+### str
+
+orjson is strict about UTF-8 conformance. This is stricter than the standard
+library's json module, which will serialize and deserialize UTF-16 surrogates,
+e.g., "\ud800", that are invalid UTF-8.
+
+If `orjson.dumps()` is given a `str` that does not contain valid UTF-8,
+`orjson.JSONEncodeError` is raised. If `loads()` receives invalid UTF-8,
+`orjson.JSONDecodeError` is raised.
+
+```python
+>>> import orjson, json
+>>> orjson.dumps('\ud800')
+JSONEncodeError: str is not valid UTF-8: surrogates not allowed
+>>> json.dumps('\ud800')
+'"\\ud800"'
+>>> orjson.loads('"\\ud800"')
+JSONDecodeError: unexpected end of hex escape at line 1 column 8: line 1 column 1 (char 0)
+>>> json.loads('"\\ud800"')
+'\ud800'
+```
+
+To make a best effort at deserializing bad input, first decode `bytes` using
+the `replace` or `lossy` argument for `errors`:
+
+```python
+>>> import orjson
+>>> orjson.loads(b'"\xed\xa0\x80"')
+JSONDecodeError: str is not valid UTF-8: surrogates not allowed
+>>> orjson.loads(b'"\xed\xa0\x80"'.decode("utf-8", "replace"))
+'���'
+```
+
+### uuid
+
+orjson serializes `uuid.UUID` instances to
+[RFC 4122](https://tools.ietf.org/html/rfc4122) format, e.g.,
+"f81d4fae-7dec-11d0-a765-00a0c91e6bf6".
+
+``` python
+>>> import orjson, uuid
+>>> orjson.dumps(uuid.uuid5(uuid.NAMESPACE_DNS, "python.org"))
+b'"886313e1-3b8a-5372-9b90-0c9aee199e5d"'
+```
+
+## Testing
+
+The library has comprehensive tests. There are tests against fixtures in the
+[JSONTestSuite](https://github.com/nst/JSONTestSuite) and
+[nativejson-benchmark](https://github.com/miloyip/nativejson-benchmark)
+repositories. It is tested to not crash against the
+[Big List of Naughty Strings](https://github.com/minimaxir/big-list-of-naughty-strings).
+It is tested to not leak memory. It is tested to not crash
+against and not accept invalid UTF-8. There are integration tests
+exercising the library's use in web servers (gunicorn using multiprocess/forked
+workers) and when multithreaded.
+
+orjson is the most correct of the compared libraries. This graph shows how each
+library handles a combined 342 JSON fixtures from the
+[JSONTestSuite](https://github.com/nst/JSONTestSuite) and
+[nativejson-benchmark](https://github.com/miloyip/nativejson-benchmark) tests:
+
+| Library    |   Invalid JSON documents not rejected |   Valid JSON documents not deserialized |
+|------------|---------------------------------------|-----------------------------------------|
+| orjson     |                                     0 |                                       0 |
+| json       |                                    17 |                                       0 |
+
+This shows that all libraries deserialize valid JSON but only orjson
+correctly rejects the given invalid JSON fixtures. Errors are largely due to
+accepting invalid strings and numbers.
+
+The graph above can be reproduced using the `pycorrectness` script.
+
+## Performance
+
+Serialization and deserialization performance of orjson is consistently better
+than the standard library's `json`. The graphs below illustrate a few commonly
+used documents.
+
+### Latency
+
+![Serialization](doc/serialization.png)
+
+![Deserialization](doc/deserialization.png)
+
+#### twitter.json serialization
+
+| Library   |   Median latency (milliseconds) |   Operations per second |   Relative (latency) |
+|-----------|---------------------------------|-------------------------|----------------------|
+| orjson    |                             0.1 |                    8453 |                  1   |
+| json      |                             1.3 |                     765 |                 11.1 |
+
+#### twitter.json deserialization
+
+| Library   |   Median latency (milliseconds) |   Operations per second |   Relative (latency) |
+|-----------|---------------------------------|-------------------------|----------------------|
+| orjson    |                             0.5 |                    1889 |                  1   |
+| json      |                             2.2 |                     453 |                  4.2 |
+
+#### github.json serialization
+
+| Library   |   Median latency (milliseconds) |   Operations per second |   Relative (latency) |
+|-----------|---------------------------------|-------------------------|----------------------|
+| orjson    |                            0.01 |                  103693 |                  1   |
+| json      |                            0.13 |                    7648 |                 13.6 |
+
+#### github.json deserialization
+
+| Library   |   Median latency (milliseconds) |   Operations per second |   Relative (latency) |
+|-----------|---------------------------------|-------------------------|----------------------|
+| orjson    |                            0.04 |                   23264 |                  1   |
+| json      |                            0.1  |                   10430 |                  2.2 |
+
+#### citm_catalog.json serialization
+
+| Library   |   Median latency (milliseconds) |   Operations per second |   Relative (latency) |
+|-----------|---------------------------------|-------------------------|----------------------|
+| orjson    |                             0.3 |                    3975 |                  1   |
+| json      |                             3   |                     338 |                 11.8 |
+
+#### citm_catalog.json deserialization
+
+| Library   |   Median latency (milliseconds) |   Operations per second |   Relative (latency) |
+|-----------|---------------------------------|-------------------------|----------------------|
+| orjson    |                             1.3 |                     781 |                  1   |
+| json      |                             4   |                     250 |                  3.1 |
+
+#### canada.json serialization
+
+| Library   |   Median latency (milliseconds) |   Operations per second |   Relative (latency) |
+|-----------|---------------------------------|-------------------------|----------------------|
+| orjson    |                             2.5 |                     399 |                  1   |
+| json      |                            29.8 |                      33 |                 11.9 |
+
+#### canada.json deserialization
+
+| Library   |   Median latency (milliseconds) |   Operations per second |   Relative (latency) |
+|-----------|---------------------------------|-------------------------|----------------------|
+| orjson    |                               3 |                     333 |                    1 |
+| json      |                              18 |                      55 |                    6 |
+
+### Reproducing
+
+The above was measured using Python 3.11.10 in a Fedora 42 container on an
+x86-64-v4 machine using the
+`orjson-3.10.11-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl`
+artifact on PyPI. The latency results can be reproduced using the `pybench` script.
+
+## Questions
+
+### Will it deserialize to dataclasses, UUIDs, decimals, etc or support object_hook?
+
+No. This requires a schema specifying what types are expected and how to
+handle errors etc. This is addressed by data validation libraries a
+level above this.
+
+### Will it serialize to `str`?
+
+No. `bytes` is the correct type for a serialized blob.
+
+### Will it support NDJSON or JSONL?
+
+No. [orjsonl](https://github.com/umarbutler/orjsonl) may be appropriate.
+
+### Will it support JSON5 or RJSON?
+
+No, it supports RFC 8259.
+
+### How do I depend on orjson in a Rust project?
+
+orjson is only shipped as a Python module. The project should depend on
+`orjson` in its own Python requirements and should obtain pointers to
+functions and objects using the normal `PyImport_*` APIs.
+
+## Packaging
+
+To package orjson requires at least [Rust](https://www.rust-lang.org/) 1.89,
+a C compiler, and the [maturin](https://github.com/PyO3/maturin) build tool.
+The recommended build command is:
+
+```sh
+maturin build --release --strip
+```
+
+The project's own CI tests against `nightly-2026-01-28` and stable 1.89. It
+is prudent to pin the nightly version because that channel can introduce
+breaking changes. There is a significant performance benefit to using
+nightly.
+
+orjson is tested on native hardware for amd64, aarch64, and i686 on Linux. It is
+cross-compiled and may be tested via emulation for arm7, ppc64le, and s390x. It
+is tested for aarch64 on macOS and cross-compiles for amd64. For
+Windows it is tested on amd64, i686, and aarch64.
+
+There are no runtime dependencies other than libc.
+
+The source distribution on PyPI contains all dependencies' source and can be
+built without network access. The file can be downloaded from
+`https://files.pythonhosted.org/packages/source/o/orjson/orjson-${version}.tar.gz`.
+
+orjson's tests are included in the source distribution on PyPI. The tests
+require only `pytest`. There are optional packages such as `pytz` and `numpy`
+listed in `test/requirements.txt` and used in ~10% of tests. Not having these
+dependencies causes the tests needing them to skip. Tests can be run
+with `pytest -q test`.
+[![GitHub release](https://img.shields.io/github/release/docker/setup-qemu-action.svg?style=flat-square)](https://github.com/docker/setup-qemu-action/releases/latest)
+[![GitHub marketplace](https://img.shields.io/badge/marketplace-docker--setup--qemu-blue?logo=github&style=flat-square)](https://github.com/marketplace/actions/docker-setup-qemu)
+[![CI workflow](https://img.shields.io/github/actions/workflow/status/docker/setup-qemu-action/ci.yml?branch=master&label=ci&logo=github&style=flat-square)](https://github.com/docker/setup-qemu-action/actions?workflow=ci)
+[![Test workflow](https://img.shields.io/github/actions/workflow/status/docker/setup-qemu-action/test.yml?branch=master&label=test&logo=github&style=flat-square)](https://github.com/docker/setup-qemu-action/actions?workflow=test)
+[![Codecov](https://img.shields.io/codecov/c/github/docker/setup-qemu-action?logo=codecov&style=flat-square)](https://codecov.io/gh/docker/setup-qemu-action)
+
+## About
+
+GitHub Action to install [QEMU](https://github.com/qemu/qemu) static binaries.
+
+![Screenshot](.github/setup-qemu-action.png)
+
+___
+
+* [Usage](#usage)
+* [Customizing](#customizing)
+  * [inputs](#inputs)
+  * [outputs](#outputs)
+* [Contributing](#contributing)
+
+## Usage
+
+```yaml
+name: ci
+
+on:
+  push:
+
+jobs:
+  qemu:
+    runs-on: ubuntu-latest
+    steps:
+      -
+        name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+```
+
+> [!NOTE]
+> If you are using [`docker/setup-buildx-action`](https://github.com/docker/setup-buildx-action),
+> this action should come before it:
+> 
+> ```yaml
+>     -
+>       name: Set up QEMU
+>       uses: docker/setup-qemu-action@v3
+>     -
+>       name: Set up Docker Buildx
+>       uses: docker/setup-buildx-action@v3
+> ```
+
+## Customizing
+
+### inputs
+
+The following inputs can be used as `step.with` keys:
+
+| Name          | Type   | Default                                                                       | Description                                        |
+|---------------|--------|-------------------------------------------------------------------------------|----------------------------------------------------|
+| `image`       | String | [`tonistiigi/binfmt:latest`](https://hub.docker.com/r/tonistiigi/binfmt/tags) | QEMU static binaries Docker image                  |
+| `platforms`   | String | `all`                                                                         | Platforms to install (e.g., `arm64,riscv64,arm`)   |
+| `cache-image` | Bool   | `true`                                                                        | Cache binfmt image to GitHub Actions cache backend |
+
+### outputs
+
+The following outputs are available:
+
+| Name          | Type    | Description                           |
+|---------------|---------|---------------------------------------|
+| `platforms`   | String  | Available platforms (comma separated) |
+
+## Contributing
+
+Want to contribute? Awesome! You can find information about contributing to
+this project in the [CONTRIBUTING.md](/.github/CONTRIBUTING.md)
 
 
 ## About FastHTML (htmx.org/docs/)
@@ -84,7 +1513,92 @@ Meta-package with all key symbols from FastHTML and Starlette. Import it like th
 By default `serve` runs uvicorn on port 5001. Never write `if __name__ == "__main__"` since `serve` checks it internally.
 serve()
 
+``` python
+// SPDX-License-Identifier: MPL-2.0
+// Copyright ijl (2021-2026)
 
+fn main() {
+    let python_config = pyo3_build_config::get();
+
+    if python_config.is_free_threaded() && std::env::var("ORJSON_BUILD_FREETHREADED").is_err() {
+        not_supported("free-threaded Python")
+    }
+
+    #[allow(unused_variables)]
+    let is_64_bit_python = matches!(python_config.pointer_width, Some(64));
+
+    match python_config.implementation {
+        pyo3_build_config::PythonImplementation::CPython => {
+            println!("cargo:rustc-cfg=CPython");
+            #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+            if is_64_bit_python {
+                println!("cargo:rustc-cfg=feature=\"inline_int\"");
+                #[cfg(target_endian = "little")]
+                println!("cargo:rustc-cfg=feature=\"inline_str\"");
+            }
+        }
+        pyo3_build_config::PythonImplementation::GraalPy => not_supported("GraalPy"),
+        pyo3_build_config::PythonImplementation::PyPy => not_supported("PyPy"),
+    }
+
+    for cfg in python_config.build_script_outputs() {
+        println!("{cfg}");
+    }
+
+    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=include/yyjson/*");
+    println!("cargo:rerun-if-env-changed=CC");
+    println!("cargo:rerun-if-env-changed=CFLAGS");
+    println!("cargo:rerun-if-env-changed=LDFLAGS");
+    println!("cargo:rerun-if-env-changed=ORJSON_BUILD_FREETHREADED");
+    println!("cargo:rerun-if-env-changed=RUSTFLAGS");
+    println!("cargo:rustc-check-cfg=cfg(cold_path)");
+    println!("cargo:rustc-check-cfg=cfg(CPython)");
+    println!("cargo:rustc-check-cfg=cfg(GraalPy)");
+    println!("cargo:rustc-check-cfg=cfg(optimize)");
+    println!("cargo:rustc-check-cfg=cfg(Py_3_10)");
+    println!("cargo:rustc-check-cfg=cfg(Py_3_11)");
+    println!("cargo:rustc-check-cfg=cfg(Py_3_12)");
+    println!("cargo:rustc-check-cfg=cfg(Py_3_13)");
+    println!("cargo:rustc-check-cfg=cfg(Py_3_14)");
+    println!("cargo:rustc-check-cfg=cfg(Py_3_15)");
+    println!("cargo:rustc-check-cfg=cfg(Py_GIL_DISABLED)");
+    println!("cargo:rustc-check-cfg=cfg(PyPy)");
+
+    #[cfg(all(target_arch = "x86_64", not(target_os = "macos")))]
+    if is_64_bit_python {
+        println!("cargo:rustc-cfg=feature=\"avx512\"");
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    if version_check::supports_feature("portable_simd").unwrap_or(false) {
+        println!("cargo:rustc-cfg=feature=\"generic_simd\"");
+    }
+
+    if version_check::supports_feature("cold_path").unwrap_or(false) {
+        println!("cargo:rustc-cfg=feature=\"cold_path\"");
+    }
+
+    if version_check::supports_feature("optimize_attribute").unwrap_or(false) {
+        println!("cargo:rustc-cfg=feature=\"optimize\"");
+    }
+
+    cc::Build::new()
+        .file("include/yyjson/yyjson.c")
+        .include("include/yyjson")
+        .define("YYJSON_DISABLE_NON_STANDARD", "1")
+        .define("YYJSON_DISABLE_UTF8_VALIDATION", "1")
+        .define("YYJSON_DISABLE_UTILS", "1")
+        .define("YYJSON_DISABLE_WRITER", "1")
+        .compile("yyjson")
+}
+
+fn not_supported(flavor: &str) {
+    let version = env!("CARGO_PKG_VERSION");
+    eprintln!("\n\n\norjson v{version} does not support {flavor}\n\n\n");
+    std::process::exit(1);
+}
+```
 To run this web app:
 
 ```bash
@@ -2744,26 +4258,26 @@ async def ws(msg:str, send):
 serve()
 </doc><doc title="Todo list application" desc="Detailed walk-thru of a complete CRUD app in FastHTML showing idiomatic use of FastHTML and HTMX patterns.">### Walkthrough of an idiomatic fasthtml app ###
 
-# This fasthtml app includes functionality from fastcore, starlette, fastlite, and fasthtml itself.
-# Run with: `python adv_app.py`
-# Importing from `fasthtml.common` brings the key parts of all of these together. We recommend using a wildcard import since only necessary parts are exported by the module.
+ This fasthtml app includes functionality from fastcore, starlette, fastlite, and fasthtml itself.
+Run with: `python adv_app.py`
+ Importing from `fasthtml.common` brings the key parts of all of these together. We recommend using a wildcard import since only necessary parts are exported by the module.
 from fasthtml.common import *
 from hmac import compare_digest
 
-# We recommend using sqlite for most apps, as it is simple, fast, and scalable. `database()` creates the db if it doesn't exist.
+ We recommend using sqlite for most apps, as it is simple, fast, and scalable. `database()` creates the db if it doesn't exist.
 db = database('data/utodos.db')
-# Create regular classes for your database tables. There are auto-converted to fastcore flexiclasses, which are like dataclasses, but with some extra functionality.
+ Create regular classes for your database tables. There are auto-converted to fastcore flexiclasses, which are like dataclasses, but with some extra functionality.
 class User: name:str; pwd:str
 class Todo: id:int; title:str; done:bool; name:str; details:str; priority:int
-# The `create` method creates a table in the database, if it doesn't already exist. The `pk` argument specifies the primary key for the table. If not provided, it defaults to 'id'.
+The `create` method creates a table in the database, if it doesn't already exist. The `pk` argument specifies the primary key for the table. If not provided, it defaults to 'id'.
 users = db.create(User, pk='name')
-# The `transform` argument is used to automatically update the database table, if it exists, to match the class definition. It is a simple and effective migration system for less complex needs. Use the `fastmigrate` package for more sophisticated migrations.
+ The `transform` argument is used to automatically update the database table, if it exists, to match the class definition. It is a simple and effective migration system for less complex needs. Use the `fastmigrate` package for more sophisticated migrations.
 todos = db.create(Todo, transform=True)
 
-# Any Starlette response class can be returned by a FastHTML route handler. In that case, FastHTML won't change it at all.
+Any Starlette response class can be returned by a FastHTML route handler. In that case, FastHTML won't change it at all.
 login_redir = RedirectResponse('/login', status_code=303)
 
-# The `before` function is a *Beforeware* function. These are functions that run before a route handler is called.
+The `before` function is a *Beforeware* function. These are functions that run before a route handler is called.
 def before(req, sess):
     # This sets the `auth` attribute in the request scope, and gets it from the session. The session is a Starlette session, which is a dict-like object which is cryptographically signed, so it can't be tampered with.
     # The `auth` key in the scope is automatically provided to any handler which requests it, and can not be injected by the user using query params, cookies, etc, so it should be secure to use.
@@ -2772,7 +4286,7 @@ def before(req, sess):
     # `xtra` adds a filter to queries and DDL statements, to ensure that the user can only see/edit their own todos.
     todos.xtra(name=auth)
 
-# Beforeware objects require the function itself, and optionally a list of regexes to skip.
+#Beforeware objects require the function itself, and optionally a list of regexes to skip.
 bware = Beforeware(before, skip=[r'/favicon\.ico', r'/static/.*', r'.*\.css', '/login', '/send_login'])
 
 markdown_js = """
@@ -2780,7 +4294,7 @@ import { marked } from "https://cdn.jsdelivr.net/npm/marked/lib/marked.esm.js";
 proc_htmx('.markdown', e => e.innerHTML = marked.parse(e.textContent));
 """
 
-# The `FastHTML` class is a subclass of `Starlette`, so you can use any parameters that `Starlette` accepts. In addition, you can add your Beforeware here, and any headers you want included in HTML responses.
+The `FastHTML` class is a subclass of `Starlette`, so you can use any parameters that `Starlette` accepts. In addition, you can add your Beforeware here, and any headers you want included in HTML responses.
 def _not_found(req, exc): return Titled('Oh no!', Div('We could not find that page :('))
 app = FastHTML(before=bware,
                # These are the same as Starlette exception_handlers, except they also support `FT` results
@@ -2795,12 +4309,12 @@ app = FastHTML(before=bware,
 # We add `rt` as a shortcut for `app.route`, which is what we'll use to decorate our route handlers.
 rt = app.route
 
-# FastHTML uses Starlette's path syntax, and adds a `static` type which matches standard static file extensions. You can define your own regex path specifiers -- for instance this is how `static` is defined in FastHTML `reg_re_param("static", "ico|gif|jpg|jpeg|webm|css|js|woff|png|svg|mp4|webp|ttf|otf|eot|woff2|txt|xml|html")`
+ FastHTML uses Starlette's path syntax, and adds a `static` type which matches standard static file extensions. You can define your own regex path specifiers -- for instance this is how `static` is defined in FastHTML `reg_re_param("static", "ico|gif|jpg|jpeg|webm|css|js|woff|png|svg|mp4|webp|ttf|otf|eot|woff2|txt|xml|html")`
 # Provide param to `rt` to use full Starlette route syntax.
 @rt("/{fname:path}.{ext:static}", methods=['GET'])
 def static_handler(fname:str, ext:str): return FileResponse(f'{fname}.{ext}')
 
-# This function handles GET and POST requests to the `/login` path, because the name of the function automatically becomes the path for the route handler, and GET/POST are available by default. We recommend generally sticking to just these two HTTP verbs.
+ This function handles GET and POST requests to the `/login` path, because the name of the function automatically becomes the path for the route handler, and GET/POST are available by default. We recommend generally sticking to just these two HTTP verbs.
 @rt
 def login():
     # This creates a form with two input fields, and a submit button. `Input`, `Form`, etc are `FT` (fasttag) objects. FastHTML composes them from trees and auto-converts them to HTML when needed.
@@ -2814,15 +4328,15 @@ def login():
         Button('login'))
     # If a user visits the URL directly, FastHTML auto-generates a full HTML page. However, if the URL is accessed by HTMX, then one HTML partial is created for each element of the tuple.
     # To avoid this auto-generation of a full page, return a `HTML` object, or a Starlette `Response`.
-    # `Titled` returns a tuple of a `Title` with the first arg and a `Container` with the rest.
-    # A handler can return either a single `FT` object or string, or a tuple of them.
-    # In the case of a tuple, the stringified objects are concatenated and returned to the browser. The `Title` tag has a special purpose: it sets the title of the page (this is HTMX's built in behavior for title HTML partials).
+    `Titled` returns a tuple of a `Title` with the first arg and a `Container` with the rest.
+     A handler can return either a single `FT` object or string, or a tuple of them.
+     In the case of a tuple, the stringified objects are concatenated and returned to the browser. The `Title` tag has a special purpose: it sets the title of the page (this is HTMX's built in behavior for title HTML partials).
     return Titled("Login", frm)
 
-# Handlers are passed whatever information they "request" in the URL, as keyword arguments.
-# This handler is called when a POST request is made to the `/login` path. The `login` argument is an instance of the `Login` class, which has been auto-instantiated from the form data.
-# There are a number of special parameter names, which will be passed useful information about the request: `session`: the Starlette session; `request`: the Starlette request; `auth`: the value of `scope['auth']`, `htmx`: the HTMX headers, if any; `app`: the FastHTML app object.
-# You can also pass any string prefix of `request` or `session`.
+ Handlers are passed whatever information they "request" in the URL, as keyword arguments.
+ This handler is called when a POST request is made to the `/login` path. The `login` argument is an instance of the `Login` class, which has been auto-instantiated from the form data.
+ There are a number of special parameter names, which will be passed useful information about the request: `session`: the Starlette session; `request`: the Starlette request; `auth`: the value of `scope['auth']`, `htmx`: the HTMX headers, if any; `app`: the FastHTML app object.
+You can also pass any string prefix of `request` or `session`.
 @rt
 def send_login(name:str, pwd:str, sess):
     if not name or not pwd: return login_redir
@@ -2841,12 +4355,12 @@ def logout(sess):
     del sess['auth']
     return login_redir
 
-# Refactoring components in FastHTML is as simple as creating Python functions. The `clr_details` function creates a Div with specific HTMX attributes.
-# `hx_swap_oob='innerHTML'` tells HTMX to swap the inner HTML of the target element out-of-band, meaning it will update this element regardless of where the HTMX request originated from. This returned div is empty, so it will clear the details view.
+ Refactoring components in FastHTML is as simple as creating Python functions. The `clr_details` function creates a Div with specific HTMX attributes.
+`hx_swap_oob='innerHTML'` tells HTMX to swap the inner HTML of the target element out-of-band, meaning it will update this element regardless of where the HTMX request originated from. This returned div is empty, so it will clear the details view.
 def clr_details(): return Div(hx_swap_oob='innerHTML', id='current-todo')
 
-# Dataclasses, dicts, namedtuples, TypedDicts, and custom classes are automatically instantiated from form data.
-# In this case, the `Todo` class is a flexiblass (a subclass of dataclass), so the handler will be passed all the field names of it.
+ Dataclasses, dicts, namedtuples, TypedDicts, and custom classes are automatically instantiated from form data.
+In this case, the `Todo` class is a flexiblass (a subclass of dataclass), so the handler will be passed all the field names of it.
 @rt
 def update(todo: Todo):
     # The updated todo is returned. By returning the updated todo, we can update the list directly. Because we return a tuple with `clr_details()`, the details view is also cleared.
@@ -2854,9 +4368,8 @@ def update(todo: Todo):
     return todos.update(todo), clr_details()
 
 @rt
-def edit(id:int):
-    # `target_id` specifies which element will be updated with the server's response (it's a shortcut for hx_target=f"#{...}").
-    # CheckboxX add an extra hidden field with the same name as the checkbox, so that it can be submitted as part of the form data. This is useful for boolean fields, where you want to know if the field was checked or not.
+def edit(id:int): `target_id` specifies which element will be updated with the server's response (it's a shortcut for hx_target=f"#{...}").
+     CheckboxX add an extra hidden field with the same name as the checkbox, so that it can be submitted as part of the form data. This is useful for boolean fields, where you want to know if the field was checked or not.
     res = Form(hx_post=update, target_id=f'todo-{id}', id="edit")(
         Group(Input(id="title"), Button("Save")),
         Hidden(id="id"), CheckboxX(id="done", label='Done'),
@@ -2869,7 +4382,7 @@ def rm(id:int):
     # `delete` removes the item with the given primary key.
     todos.delete(id)
     # Returning `clr_details()` ensures the details view is cleared after deletion, leveraging HTMX's out-of-band swap feature.
-    # Note that we are not returning *any* FT component that doesn't have an "OOB" swap, so the target element inner HTML is simply deleted.
+    ## Note that we are not returning *any* FT component that doesn't have an "OOB" swap, so the target element inner HTML is simply deleted.
     return clr_details()
 
 @rt
@@ -2878,13 +4391,13 @@ def show(id:int):
     # `hx_swap` determines how the update should occur. We use "outerHTML" to replace the entire todo `Li` element.
     # `rm.to(id=todo.id)` is a shortcut for `f'/rm?id={todo.id}'`. All routes have this `to` method.
     btn = Button('delete', hx_post=rm.to(id=todo.id),
-                 hx_target=f'#todo-{todo.id}', hx_swap="outerHTML")
-    # The "markdown" class is used here because that's the CSS selector we used in the JS earlier. This will trigger the JS to parse the markdown.
-    # Because `class` is a reserved keyword in Python, we use `cls` instead, which FastHTML auto-converts.
+                 hx_target=f'#todo-{todo.id}', hx_swap="outerHTML")   
+The "markdown" class is used here because that's the CSS selector we used in the JS earlier. This will trigger the JS to parse the markdown.
+     Because `class` is a reserved keyword in Python, we use `cls` instead, which FastHTML auto-converts.
     return Div(H2(todo.title), Div(todo.details, cls="markdown"), btn)
 
-# `fastcore.patch` adds a method to an existing class.
-# The `__ft__` method is a special method that FastHTML uses to convert the object into an `FT` object, so that it can be composed into an FT tree, and later rendered into HTML.
+ `fastcore.patch` adds a method to an existing class.
+The `__ft__` method is a special method that FastHTML uses to convert the object into an `FT` object, so that it can be composed into an FT tree, and later rendered into HTML.
 @patch
 def __ft__(self:Todo):
     # Some FastHTML tags have an 'X' suffix, which means they're "extended" in some way. For instance, here `AX` is an extended `A` tag, which takes 3 positional arguments: `(text, hx_get, target_id)`.
@@ -2902,20 +4415,17 @@ def __ft__(self:Todo):
 def create(todo:Todo):
     # `hx_swap_oob='true'` tells HTMX to perform an out-of-band swap, updating this element wherever it appears. This is used to clear the input field after adding the new todo.
     new_inp =  Input(id="new-title", name="title", placeholder="New Todo", hx_swap_oob='true')
-    # `insert` returns the inserted todo, which is appended to the list start, because we used `hx_swap='afterbegin'` when creating the form.
-    return todos.insert(todo), new_inp
-
-# Because the todo list form created earlier included hidden inputs with the todo IDs, they are included in the form data. By using a parameter called (e.g) "id", FastHTML will try to find something suitable in the request with this name. In order, it searches as follows: path; query; cookies; headers; session keys; form data.
-# FastHTML will use your parameter's type annotation to try to cast the value to the requested type. In the case of form data, there can be multiple values with the same key. So in this case, the parameter is a list of ints.
-@rt
-def reorder(id:list[int]):
-    # Normally running a query in a loop like this would be really slow. But sqlite is at least as fast as a file system, so this pattern is actually idiomatic and efficient.
-    for i,id_ in enumerate(id): todos.update({'priority':i}, id_)
-    # HTMX by default replaces the inner HTML of the calling element, which in this case is the todo list form. Therefore, we return the list of todos, now in the correct order, which will be auto-converted to FT for us.
+    # `insert` returns the inserted todo, which is appended to the list start, because we used `hx_swap='afterbegin'`when creating the form.return todos.insert(todo), new_inp
+Because the todo list form created earlier included hidden inputs with the todo IDs, they are included in the form data. By using a parameter called (e.g) "id", FastHTML will try to find something suitable in the request with this name. In order, it searches as follows: path; query; cookies; headers; session keys; form data.
+FastHTML will use your parameter's type annotation to try to cast the value to the requested type. In the case of form data, there can be multiple values with the same key. So in this case, the parameter is a list of ints.
+@rt def reorder(id:list[int]):
+Normally running a query in a loop like this would be really slow. But sqlite is at least as fast as a file system, so this pattern is actually idiomatic and efficient.
+for i,id_ in enumerate(id): todos.update({'priority':i}, id_)
+#HTMX by default replaces the inner HTML of the calling element, which in this case is the todo list form. Therefore, we return the list of todos, now in the correct order, which will be auto-converted to FT for us.
     # In this case, it's not strictly necessary, because sortable.js has already reorder the DOM elements. However, by returning the updated data, we can be assured that there aren't sync issues between the DOM and the server.
     return tuple(todos(order_by='priority'))
 
-# This is the handler for the main todo list application. By including the `auth` parameter, it gets passed the current username, for displaying in the title. `index()` is a special name for the main route handler, and is called when the root path `/` is accessed.
+ This is the handler for the main todo list application. By including the `auth` parameter, it gets passed the current username, for displaying in the title. `index()` is a special name for the main route handler, and is called when the root path `/` is accessed.
 @rt
 def index(auth):
     title = f"{auth}'s Todo list"
